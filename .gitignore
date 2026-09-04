@@ -1,0 +1,22 @@
+# 敏感凭据与配置文件
+config.json
+
+# 本地记忆与用户档案数据
+data/
+
+# 临时与缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.tmp
+*.mp3
+*.wav
+
+# 打包产物（PyInstaller）
+build/
+dist/
+*.spec
+
+# 虚拟环境
+venv/
+.env

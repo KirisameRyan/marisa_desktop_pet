@@ -1,0 +1,27 @@
+{
+  "deepseek": {
+    "base_url": "https://api.deepseek.com",
+    "api_key": "YOUR_DEEPSEEK_API_KEY_HERE",
+    "model": "deepseek-chat"
+  },
+  "vision": {
+    "base_url": "https://open.bigmodel.cn/api/paas/v4",
+    "api_key": "YOUR_ZHIPU_API_KEY_HERE",
+    "model": "glm-4.6v-flash"
+  },
+  "tts": {
+    "engine": "edge",
+    "voice": "zh-CN-XiaoxiaoNeural",
+    "rate": "+15%",
+    "pitch": "+10Hz",
+    "gpt_sovits_api_url": "http://127.0.0.1:9880"
+  },
+  "pet": {
+    "auto_screen_inspect": true,
+    "inspect_interval_seconds": 600,
+    "scale": 1.0,
+    "song_notify": true,
+    "hourly_chime": false,
+    "marisa_daily_notify": true
+  }
+}
