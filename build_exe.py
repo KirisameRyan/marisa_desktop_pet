@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-APP_NAME = "魔理沙桌宠"
+APP_NAME = "魔理沙桌宠" + os.environ.get("PET_APP_SUFFIX", "")
 ENTRY = ROOT / "run_pet.py"
 ICON = ROOT / "assets" / "marisa.ico"
 ASSETS_DIR = ROOT / "assets" / "marisa"
@@ -110,9 +110,22 @@ def main():
   · 智谱 GLM-V 密钥（视觉眼睛）：https://open.bigmodel.cn/usercenter/apikeys
 填好后点击「测试连接并查余额」即可验证。
 
+【QQ 远程（可选，需 NapCat + AstrBot）】
+1. 下载并运行 NapCatQQ（github.com/NapNeko/NapCatQQ），用 QQ 号扫码登录。
+   ⚠ 第三方协议 + 主号存在风控风险，请自行权衡。
+2. 准备 AstrBot（github.com/Soulter/AstrBot 的 4.x 源码）：
+   在该目录执行 `uv sync` 或 `pip install -r requirements.txt`，
+   运行 `python main.py` 启动（面板 http://127.0.0.1:6185）。
+   也可把路径填进桌宠设置 →「🔌 QQ/远程」→ 由桌宠托管启停。
+3. AstrBot WebUI「平台管理」添加 OneBot v11：反向 WS 端口填 6199；
+   NapCat 侧连接 ws://127.0.0.1:6199/ws。
+4. 把 astrbot_plugins/marisa_bridge 插件放进 AstrBot 插件目录并在 WebUI 启用。
+5. 桌宠设置「🔌 QQ/远程」：启用大脑、打开远程指令、填白名单 QQ 号、保存后重启桌宠。
+6. 私聊魔理沙即可；群里需消息以「魔理沙」开头。
+
 【数据与存档】
 · config.json：你的 API 配置（不会出现在 Git 仓库中）
-· data/ 文件夹：好感度、长期记忆与聊天历史，请勿随意删除
+· data/ 文件夹：好感度、长期记忆、聊天历史、网易云登录态与桥接配置
 · assets/ 文件夹：魔理沙的动作帧图片，可自行替换皮肤
 
 祝你和魔理沙玩得开心だぜ！★

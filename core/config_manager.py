@@ -5,13 +5,17 @@ from pathlib import Path
 from typing import Any, Dict
 
 # 判断是否打包为 exe
-if getattr(sys, "frozen", False):
-    # exe 运行模式：配置文件与存档保存在 exe 同级目录下
+_CANDIDATE_ROOT = Path(r"D:\zhuochong")
+if _CANDIDATE_ROOT.exists():
+    ROOT_DIR = _CANDIDATE_ROOT
+elif getattr(sys, "frozen", False):
     ROOT_DIR = Path(sys.executable).resolve().parent
-    INTERNAL_DIR = Path(getattr(sys, "_MEIPASS", ROOT_DIR))
 else:
-    # 源码开发模式
     ROOT_DIR = Path(__file__).resolve().parent.parent
+
+if getattr(sys, "frozen", False):
+    INTERNAL_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+else:
     INTERNAL_DIR = ROOT_DIR
 
 CONFIG_PATH = ROOT_DIR / "config.json"
@@ -41,7 +45,28 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "scale": 1.0,
         "song_notify": True,
         "hourly_chime": False,
-        "marisa_daily_notify": True
+        "marisa_daily_notify": True,
+        "presence_watch": True,
+        "presence_idle_seconds": 300,
+        "magic_delete": True,
+        "hotkey_enable": True,
+        "hotkey_combo": "ctrl+alt+m",
+        "zany_auto": True,
+        "zany_level": 1
+    },
+    "msg": {
+        "bridge_enabled": False,
+        "brain_token": "marisa-local-2026",
+        "brain_port": 19999,
+        "qq_allowed_users": "",
+        "qq_allowed_groups": "",
+        "remote_enabled": False,
+        "astrbot_path": "",
+        "astrbot_auto_start": False,
+        "astrbot_python": "",
+        "maibot_enabled": False,
+        "maibot_ws": "ws://127.0.0.1:8400",
+        "maibot_fav_path": r"D:\MaiBot-1.2.4\data\marisa\favorability.json"
     }
 }
 

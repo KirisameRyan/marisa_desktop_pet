@@ -1,5 +1,8 @@
+import json
+import socket
 import sys
 import webbrowser
+from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QFont, QIcon, QColor, QDesktopServices, QPixmap
 from PyQt6.QtWidgets import (
@@ -73,16 +76,19 @@ class SettingsDialog(QDialog):
         self.tab_pet = QWidget()
         self.tab_voice = QWidget()
         self.tab_memory = QWidget()
+        self.tab_msg = QWidget()
 
         self.tabs.addTab(self.tab_api, "🔑 API 与指引")
         self.tabs.addTab(self.tab_pet, "🎛️ 巡检与桌宠")
         self.tabs.addTab(self.tab_voice, "🗣️ 语音与音乐")
         self.tabs.addTab(self.tab_memory, "❤️ 羁绊与记忆")
+        self.tabs.addTab(self.tab_msg, "🧠 MaiBot 一体化")
 
         self._build_tab_api()
         self._build_tab_pet()
         self._build_tab_voice()
         self._build_tab_memory()
+        self._build_tab_msg()
 
         main_layout.addWidget(self.tabs)
 
@@ -220,6 +226,46 @@ class SettingsDialog(QDialog):
         sc_layout.addStretch()
         layout.addWidget(grp_scale)
 
+        # 互动与陪伴
+        grp_inter = QGroupBox("🧚 互动与陪伴")
+        inter_layout = QVBoxLayout(grp_inter)
+        self.chk_presence = QCheckBox("主人离开时打瞌睡，回来后打招呼（离开检测）")
+        inter_layout.addWidget(self.chk_presence)
+        presence_row = QHBoxLayout()
+        presence_row.addWidget(QLabel("判定离开的时长:"))
+        self.slider_presence = QSlider(Qt.Orientation.Horizontal)
+        self.slider_presence.setRange(1, 30)
+        self.lbl_presence_val = QLabel("5 分钟")
+        self.slider_presence.valueChanged.connect(
+            lambda val: self.lbl_presence_val.setText(f"{val} 分钟")
+        )
+        presence_row.addWidget(self.slider_presence)
+        presence_row.addWidget(self.lbl_presence_val)
+        inter_layout.addLayout(presence_row)
+
+        self.chk_magic_delete = QCheckBox("允许把文件/快捷方式拖到魔理沙身上，用魔法送进回收站")
+        inter_layout.addWidget(self.chk_magic_delete)
+
+        hotkey_row = QHBoxLayout()
+        self.chk_hotkey = QCheckBox("启用全局呼叫热键")
+        self.combo_hotkey = QComboBox()
+        self.combo_hotkey.addItems(["Ctrl+Alt+M", "Ctrl+Alt+Space", "Ctrl+Shift+Space", "Ctrl+Alt+Z"])
+        hotkey_row.addWidget(self.chk_hotkey)
+        hotkey_row.addWidget(self.combo_hotkey)
+        hotkey_row.addStretch()
+        inter_layout.addLayout(hotkey_row)
+
+        self.chk_zany = QCheckBox("整活行为自动触发（跑/躺/吊窗/爬窗/推窗等）")
+        inter_layout.addWidget(self.chk_zany)
+        zany_row = QHBoxLayout()
+        zany_row.addWidget(QLabel("整活频率:"))
+        self.combo_zany = QComboBox()
+        self.combo_zany.addItems(["克制（安静陪伴为主）", "热闹（偶尔到处皮）"])
+        zany_row.addWidget(self.combo_zany)
+        zany_row.addStretch()
+        inter_layout.addLayout(zany_row)
+        layout.addWidget(grp_inter)
+
         layout.addStretch()
 
     # --- Tab 3: 语音与音乐 ---
@@ -355,6 +401,104 @@ class SettingsDialog(QDialog):
         layout.addStretch()
 
     # --- 数据装载与保存 ---
+    # --- Tab 5: MaiBot 一体化大脑 ---
+    def _build_tab_msg(self):
+        layout = QVBoxLayout(self.tab_msg)
+        layout.setSpacing(12)
+
+        grp_brain = QGroupBox("🧠 MaiBot 一体化大脑（QQ 与桌面同一颗魔理沙）")
+        b_layout = QVBoxLayout(grp_brain)
+        self.chk_maibot = QCheckBox("启用：桌面聊天走 MaiBot 大脑（记忆/人格/好感与 QQ 同源）")
+        b_layout.addWidget(self.chk_maibot)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("MaiBot 桌面网关地址:"))
+        self.edit_maibot_ws = QLineEdit()
+        self.edit_maibot_ws.setPlaceholderText("ws://127.0.0.1:8400")
+        row.addWidget(self.edit_maibot_ws)
+        self.btn_maibot_refresh = QPushButton("🔄 检测连接")
+        self.btn_maibot_refresh.clicked.connect(self._maibot_refresh)
+        row.addWidget(self.btn_maibot_refresh)
+        b_layout.addLayout(row)
+        self.lbl_maibot_state = QLabel("")
+        self.lbl_maibot_state.setStyleSheet("color: #555; font-size: 11px;")
+        self.lbl_maibot_state.setWordWrap(True)
+        b_layout.addWidget(self.lbl_maibot_state)
+        tip = QLabel(
+            "说明：MaiBot 是本桌宠的统一大脑（通过 NapCat 上 QQ，通过本机网关连桌面）。\n"
+            "桌面与 QQ 的聊天记忆、好感度、羁绊档案全部同源，改这里即可即时启停。"
+        )
+        tip.setStyleSheet("color: #888; font-size: 11px;")
+        tip.setWordWrap(True)
+        b_layout.addWidget(tip)
+        layout.addWidget(grp_brain)
+
+        grp_fav = QGroupBox("❤️ 好感度（MaiBot 单源数据）")
+        f_layout = QVBoxLayout(grp_fav)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("数据文件:"))
+        self.edit_maibot_fav_path = QLineEdit()
+        self.edit_maibot_fav_path.setPlaceholderText(
+            r"D:\MaiBot-1.2.4\data\marisa\favorability.json"
+        )
+        row2.addWidget(self.edit_maibot_fav_path)
+        self.btn_fav_refresh = QPushButton("🔄 刷新")
+        self.btn_fav_refresh.clicked.connect(self._maibot_fav_refresh)
+        row2.addWidget(self.btn_fav_refresh)
+        f_layout.addLayout(row2)
+        self.lbl_maibot_fav = QLabel("")
+        self.lbl_maibot_fav.setStyleSheet("color: #b38600; font-size: 12px; font-weight: bold;")
+        self.lbl_maibot_fav.setWordWrap(True)
+        f_layout.addWidget(self.lbl_maibot_fav)
+        layout.addWidget(grp_fav)
+        layout.addStretch()
+
+    @staticmethod
+    def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
+        try:
+            s = socket.create_connection((host, port), timeout=timeout)
+            s.close()
+            return True
+        except Exception:
+            return False
+
+    def _maibot_refresh(self):
+        """探测 MaiBot 桌面网关(8400) 与 WebUI(8001)。"""
+        ws_up = self._port_open(8400)
+        web_up = self._port_open(8001)
+        parts = []
+        if self.chk_maibot.isChecked():
+            parts.append("本端开关: 开")
+        else:
+            parts.append("本端开关: 关")
+        parts.append("桌面网关8400:" + ("通" if ws_up else "不通"))
+        parts.append("MaiBot WebUI8001:" + ("通" if web_up else "不通"))
+        if not ws_up:
+            parts.append("（请先启动 MaiBot：D:\\MaiBot-1.2.4 下 python bot.py）")
+        self.lbl_maibot_state.setText(" · ".join(parts))
+        self._maibot_fav_refresh()
+
+    def _maibot_fav_refresh(self):
+        """读取 MaiBot 单源好感度文件并展示。"""
+        path = self.edit_maibot_fav_path.text().strip()
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            fav = int(data.get("favorability", 0))
+            if fav >= 80:
+                rank = "灵魂挚友"
+            elif fav >= 60:
+                rank = "亲密搭档"
+            elif fav >= 40:
+                rank = "可靠的搭档"
+            elif fav >= 20:
+                rank = "熟络的助手"
+            else:
+                rank = "初识的魔法使"
+            total = int(data.get("total_interactions", 0))
+            self.lbl_maibot_fav.setText(f"{fav}/100（{rank}） · 累计互动 {total} 次\nQQ 与桌面端看到的都是这个数字だぜ★")
+        except Exception as e:
+            self.lbl_maibot_fav.setText(f"（暂未读到 MaiBot 好感文件：{str(e)[:70]}）")
+            self.lbl_maibot_fav.setStyleSheet("color: #999; font-size: 11px;")
+
     def _load_values(self):
         # API Keys
         self.edit_ds_key.setText(APP_CONFIG.get("deepseek", "api_key", ""))
@@ -375,6 +519,27 @@ class SettingsDialog(QDialog):
         sc = APP_CONFIG.get("pet", "scale", 1.0)
         scale_map = {0.8: 0, 1.0: 1, 1.25: 2, 1.5: 3}
         self.combo_scale.setCurrentIndex(scale_map.get(sc, 1))
+
+        # 互动与陪伴
+        self.chk_presence.setChecked(bool(APP_CONFIG.get("pet", "presence_watch", True)))
+        idle_min = max(1, min(30, int(APP_CONFIG.get("pet", "presence_idle_seconds", 300)) // 60))
+        self.slider_presence.setValue(idle_min)
+        self.lbl_presence_val.setText(f"{idle_min} 分钟")
+        self.chk_magic_delete.setChecked(bool(APP_CONFIG.get("pet", "magic_delete", True)))
+        self.chk_hotkey.setChecked(bool(APP_CONFIG.get("pet", "hotkey_enable", True)))
+        combo_stored = str(APP_CONFIG.get("pet", "hotkey_combo", "ctrl+alt+m"))
+        combo_map = {"ctrl+alt+m": 0, "ctrl+alt+space": 1, "ctrl+shift+space": 2, "ctrl+alt+z": 3}
+        self.combo_hotkey.setCurrentIndex(combo_map.get(combo_stored, 0))
+        self.chk_zany.setChecked(bool(APP_CONFIG.get("pet", "zany_auto", True)))
+        self.combo_zany.setCurrentIndex(max(0, int(APP_CONFIG.get("pet", "zany_level", 1)) - 1))
+
+        # MaiBot 一体化大脑
+        self.chk_maibot.setChecked(bool(APP_CONFIG.get("msg", "maibot_enabled", False)))
+        self.edit_maibot_ws.setText(str(APP_CONFIG.get("msg", "maibot_ws", "ws://127.0.0.1:8400")))
+        self.edit_maibot_fav_path.setText(
+            str(APP_CONFIG.get("msg", "maibot_fav_path", r"D:\MaiBot-1.2.4\data\marisa\favorability.json"))
+        )
+        self._maibot_refresh()
 
         # 声音
         rate_str = APP_CONFIG.get("tts", "rate", "+15%").replace("%", "")
@@ -412,6 +577,22 @@ class SettingsDialog(QDialog):
 
         scale_values = [0.8, 1.0, 1.25, 1.5]
         APP_CONFIG.data["pet"]["scale"] = scale_values[self.combo_scale.currentIndex()]
+
+        APP_CONFIG.data["pet"]["presence_watch"] = self.chk_presence.isChecked()
+        APP_CONFIG.data["pet"]["presence_idle_seconds"] = self.slider_presence.value() * 60
+        APP_CONFIG.data["pet"]["magic_delete"] = self.chk_magic_delete.isChecked()
+        APP_CONFIG.data["pet"]["hotkey_enable"] = self.chk_hotkey.isChecked()
+        combo_values = ["ctrl+alt+m", "ctrl+alt+space", "ctrl+shift+space", "ctrl+alt+z"]
+        APP_CONFIG.data["pet"]["hotkey_combo"] = combo_values[self.combo_hotkey.currentIndex()]
+        APP_CONFIG.data["pet"]["zany_auto"] = self.chk_zany.isChecked()
+        APP_CONFIG.data["pet"]["zany_level"] = self.combo_zany.currentIndex() + 1
+
+        # MaiBot 一体化大脑
+        APP_CONFIG.data["msg"]["maibot_enabled"] = self.chk_maibot.isChecked()
+        APP_CONFIG.data["msg"]["maibot_ws"] = self.edit_maibot_ws.text().strip() or "ws://127.0.0.1:8400"
+        fav_p = self.edit_maibot_fav_path.text().strip()
+        if fav_p:
+            APP_CONFIG.data["msg"]["maibot_fav_path"] = fav_p
 
         APP_CONFIG.data["tts"]["rate"] = f"{self.slider_rate.value():+d}%"
         APP_CONFIG.data["tts"]["pitch"] = f"{self.slider_pitch.value():+d}Hz"

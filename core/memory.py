@@ -1,15 +1,20 @@
 import json
+import threading
 import time
 import sys
 from pathlib import Path
 from typing import Dict, List, Any
 
-if getattr(sys, "frozen", False):
-    ROOT_DIR = Path(sys.executable).resolve().parent
+# 统一存储中枢：无论是在开发源码运行还是在打包 dist 中运行，
+# 优先绑定全局主项目目录 D:\zhuochong\data，避免桌宠 GUI 与后台大脑 QQ 割裂。
+_CANDIDATE_DATA = Path(r"D:\zhuochong\data")
+if _CANDIDATE_DATA.parent.exists():
+    DATA_DIR = _CANDIDATE_DATA
+elif getattr(sys, "frozen", False):
+    DATA_DIR = Path(sys.executable).resolve().parent / "data"
 else:
-    ROOT_DIR = Path(__file__).resolve().parent.parent
+    DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-DATA_DIR = ROOT_DIR / "data"
 PROFILE_PATH = DATA_DIR / "profile.json"
 MEMORY_PATH = DATA_DIR / "memory.json"
 CHAT_HIST_PATH = DATA_DIR / "chat_history.json"
@@ -36,10 +41,13 @@ DEFAULT_MEMORY = {
 }
 
 class MemoryManager:
+    _lock = threading.RLock()
+
     def __init__(self):
-        self.profile: Dict[str, Any] = self._load_json(PROFILE_PATH, DEFAULT_PROFILE)
-        self.memory: Dict[str, Any] = self._load_json(MEMORY_PATH, DEFAULT_MEMORY)
-        self.chat_history: List[Dict[str, str]] = self._load_json(CHAT_HIST_PATH, [])
+        with self._lock:
+            self.profile: Dict[str, Any] = self._load_json(PROFILE_PATH, DEFAULT_PROFILE)
+            self.memory: Dict[str, Any] = self._load_json(MEMORY_PATH, DEFAULT_MEMORY)
+            self.chat_history: List[Dict[str, str]] = self._load_json(CHAT_HIST_PATH, [])
 
     def _load_json(self, path: Path, default_val: Any) -> Any:
         if path.exists():
@@ -52,8 +60,9 @@ class MemoryManager:
 
     def _save_json(self, path: Path, data: Any):
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            with self._lock:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"[Memory] Failed to save {path.name}: {e}")
 
@@ -74,11 +83,12 @@ class MemoryManager:
             return "幻想乡挚友", "最高羁绊！魔理沙将你视为挚友，随时准备为你轰出极限火花！"
 
     def add_favorability(self, delta: int, reason: str = "") -> int:
-        old_val = self.profile.get("favorability", 15)
-        new_val = max(0, min(100, old_val + delta))
-        self.profile["favorability"] = new_val
-        self.profile["interaction_count"] = self.profile.get("interaction_count", 0) + 1
-        self._save_json(PROFILE_PATH, self.profile)
+        with self._lock:
+            old_val = self.profile.get("favorability", 15)
+            new_val = max(0, min(100, old_val + delta))
+            self.profile["favorability"] = new_val
+            self.profile["interaction_count"] = self.profile.get("interaction_count", 0) + 1
+            self._save_json(PROFILE_PATH, self.profile)
         if delta != 0:
             print(f"[Favorability] {delta:+d} ({reason}) -> Current: {new_val}")
         return new_val
@@ -93,13 +103,31 @@ class MemoryManager:
             return True, val
         return False, self.get_favorability()
 
+    # --- 陪伴天数 ---
+    def get_days_together(self) -> int:
+        """从首次陪伴之日算起的第 N 天（>=1）。"""
+        created = self.profile.get("created_at", 0) or 0
+        if not created:
+            return 1
+        days = int((time.time() - created) // 86400) + 1
+        return max(1, days)
+
+    def mark_day_greeted(self):
+        """记录今天已播报过陪伴天数。"""
+        self.profile["last_day_greeted"] = time.strftime("%Y-%m-%d")
+        self._save_json(PROFILE_PATH, self.profile)
+
+    def has_greeted_today(self) -> bool:
+        return self.profile.get("last_day_greeted") == time.strftime("%Y-%m-%d")
+
     # --- 对话上下文与记忆 ---
     def add_chat(self, role: str, content: str):
-        self.chat_history.append({"role": role, "content": content})
-        # 限制滑动窗口为最近 12 轮 (24 条)
-        if len(self.chat_history) > 24:
-            self.chat_history = self.chat_history[-24:]
-        self._save_json(CHAT_HIST_PATH, self.chat_history)
+        with self._lock:
+            self.chat_history.append({"role": role, "content": content})
+            # 限制滑动窗口为最近 12 轮 (24 条)
+            if len(self.chat_history) > 24:
+                self.chat_history = self.chat_history[-24:]
+            self._save_json(CHAT_HIST_PATH, self.chat_history)
 
     def get_recent_history(self, limit: int = 10) -> List[Dict[str, str]]:
         return self.chat_history[-limit:]

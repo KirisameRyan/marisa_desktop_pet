@@ -1,4 +1,13 @@
+import os
 import sys
+from pathlib import Path
+
+# 优先绑定当前桌宠根目录，并隔离与外部项目的模块冲突
+_ROOT_DIR = str(Path(__file__).resolve().parent)
+sys.path = [p for p in sys.path if not ("MaiBot-1.2.4" in p and "src" in p)]
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
 from pet.pet_window import MarisaPetWindow

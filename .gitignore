@@ -17,6 +17,12 @@ build/
 dist/
 *.spec
 
+# 三方嵌入式组件 (NapCat 运行时)
+NapCat.Shell.Windows.Node/
+
+# 本地工具目录
+.zcode/
+
 # 虚拟环境
 venv/
 .env

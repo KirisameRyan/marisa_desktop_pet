@@ -5,7 +5,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any
 
-if getattr(sys, "frozen", False):
+_CANDIDATE_ROOT = Path(r"D:\zhuochong")
+if _CANDIDATE_ROOT.exists():
+    ROOT_DIR = _CANDIDATE_ROOT
+elif getattr(sys, "frozen", False):
     ROOT_DIR = Path(sys.executable).resolve().parent
 else:
     ROOT_DIR = Path(__file__).resolve().parent.parent

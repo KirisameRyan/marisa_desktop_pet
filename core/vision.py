@@ -31,6 +31,18 @@ class ScreenObserver:
         b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
         return f"data:image/jpeg;base64,{b64_str}"
 
+    def capture_screen_file(self, path: str, max_width: int = 1600):
+        """截屏存为本地图片文件（供远程发图）。返回路径。"""
+        monitor = self.sct.monitors[1]
+        sct_img = self.sct.grab(monitor)
+        img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        if img.width > max_width:
+            ratio = max_width / float(img.width)
+            img = img.resize((max_width, int(float(img.height) * ratio)),
+                             Image.Resampling.BILINEAR)
+        img.save(path, format="PNG")
+        return path
+
     def analyze_screen(self, question: str = "请简要描述屏幕上正在展示的关键内容与软件") -> str:
         """调用智谱视觉模型 (glm-4.6v-flash) 分析屏幕内容"""
         if not APP_CONFIG.is_vision_configured():

@@ -22,6 +22,24 @@
     "scale": 1.0,
     "song_notify": true,
     "hourly_chime": false,
-    "marisa_daily_notify": true
+    "marisa_daily_notify": true,
+    "presence_watch": true,
+    "presence_idle_seconds": 300,
+    "magic_delete": true,
+    "hotkey_enable": true,
+    "hotkey_combo": "ctrl+alt+m",
+    "zany_auto": true,
+    "zany_level": 1
+  },
+  "msg": {
+    "bridge_enabled": false,
+    "brain_token": "marisa-local-2026",
+    "brain_port": 19999,
+    "qq_allowed_users": "",
+    "qq_allowed_groups": "",
+    "remote_enabled": false,
+    "astrbot_path": "",
+    "astrbot_auto_start": false,
+    "astrbot_python": ""
   }
 }
