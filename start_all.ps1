@@ -5,10 +5,12 @@
 #>
 $ErrorActionPreference = "Continue"
 
-$NapCatDir = "D:\zhuochong\NapCat.Shell.Windows.Node\napcat"
-$MaiBotDir = "D:\MaiBot-1.2.4"
-$PetExe = "D:\zhuochong\dist\魔理沙桌宠\魔理沙桌宠.exe"
-$LogDir = "D:\zhuochong\data"
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$NapCatDir = Join-Path $Root "NapCat.Shell.Windows.Node\napcat"
+$MaiBotDir = $Root
+$PetExe = Join-Path $Root "dist\魔理沙桌宠\魔理沙桌宠.exe"
+$LogDir = Join-Path $Root "data"
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
 function Test-PortOpen([int]$port, [string]$hostName = "127.0.0.1") {
     try {
@@ -51,7 +53,8 @@ if ($napcatUp -or $napcatProc) {
 # ---------- Key 同步（桌宠 config.json -> MaiBot） ----------
 Write-Host "[同步] 对齐 MaiBot API Key（来源：桌宠配置）..." -ForegroundColor Cyan
 try {
-    $syncOut = & "$MaiBotDir\.venv\Scripts\python.exe" "D:\zhuochong\core\maibot_key_sync.py" 2>&1
+    $syncScript = Join-Path $Root "pet_core\maibot_key_sync.py"
+    $syncOut = & "$MaiBotDir\.venv\Scripts\python.exe" $syncScript 2>&1
     Write-Host "  $syncOut" -ForegroundColor DarkYellow
 } catch {
     Write-Host "  [警告] Key 同步失败：$_" -ForegroundColor Red

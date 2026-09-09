@@ -2,11 +2,18 @@ import os
 import sys
 from pathlib import Path
 
-# 优先绑定当前桌宠根目录，并隔离与外部项目的模块冲突
-_ROOT_DIR = str(Path(__file__).resolve().parent)
+import os
+import sys
+from pathlib import Path
+
+# 优先绑定当前工程根目录与插件目录（隔离外部冲突）
+_ROOT_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = _ROOT_DIR / "plugins" / "marisa_desktop"
 sys.path = [p for p in sys.path if not ("MaiBot-1.2.4" in p and "src" in p)]
-if _ROOT_DIR not in sys.path:
-    sys.path.insert(0, _ROOT_DIR)
+if str(_PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_DIR))
+if str(_ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(_ROOT_DIR))
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
