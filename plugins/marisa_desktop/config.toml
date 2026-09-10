@@ -1,0 +1,30 @@
+[plugin]
+enabled = true
+config_version = "0.1.0"
+
+[server]
+host = "127.0.0.1"
+port = 8400
+
+[identity]
+owner_user_id = "3895418161"
+owner_nickname = "主人"
+bot_account_id = "desktop-0"
+
+[launcher]
+auto_start_pet = true
+pet_mode = "dev"
+pet_exe = "run_pet.py"
+dev_python = ".venv\\Scripts\\python.exe"
+dev_script = "run_pet.py"
+dev_workdir = "."
+check_interval_sec = 10.0
+
+[patrol] # 桌面主动巡检：定时看一眼屏幕，主动找主人搭话
+enabled = true
+interval_seconds = 900
+vision_model = "vlm"
+text_model = "utils"
+quiet_start_hour = 23
+quiet_end_hour = 8
+require_pet_online = true

@@ -1,0 +1,43 @@
+{
+  "manifest_version": 2,
+  "version": "0.2.0",
+  "name": "魔理沙守门人",
+  "description": "魔理沙桌面伙伴的 MaiBot 中枢：触发门控（私聊主人直通 / 群前缀与 @ / 其余静默）、主人命令（天气·好感·截图·锁屏等）、跨端好感度服务、电脑管家（体检/清理方案/执行/撤销）。",
+  "author": {
+    "name": "Marisa Desktop Team",
+    "url": "https://github.com/"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/",
+    "homepage": "https://github.com/",
+    "documentation": "https://github.com/",
+    "issues": "https://github.com/"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "send.hybrid",
+    "config.get",
+    "chat.open_session",
+    "render.html2png",
+    "api.call"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "marisa-team.marisa-gate",
+  "plugin_type": "normal"
+}

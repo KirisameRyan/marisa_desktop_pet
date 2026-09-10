@@ -1,0 +1,47 @@
+{
+  "manifest_version": 2,
+  "version": "0.2.0",
+  "name": "魔理沙桌面适配器",
+  "description": "把桌面桌宠 Qt 客户端接入 MaiBot：本地 WebSocket 双工网关，桌面成为与 QQ 平等的平台（同一人格 / 同一大脑）。",
+  "author": {
+    "name": "Marisa Desktop Team",
+    "url": "https://github.com/"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/",
+    "homepage": "https://github.com/",
+    "documentation": "https://github.com/",
+    "issues": "https://github.com/"
+  },
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "send.custom",
+    "send.hybrid",
+    "chat.open_session",
+    "config.get",
+    "component.enable",
+    "component.disable",
+    "llm.generate",
+    "llm.transcribe_audio",
+    "render.html2png",
+    "api.call"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "marisa-team.marisa-desktop",
+  "plugin_type": "adapter"
+}

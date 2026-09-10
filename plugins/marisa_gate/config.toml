@@ -1,0 +1,33 @@
+[plugin]
+enabled = true
+config_version = "0.2.0"
+
+[rules]
+group_mode = "open"
+owners = ["3895418161"]
+groups = ["1058958004"]
+cooldown_sec = 3.0
+seed_favorability = 51
+fav_chat_cap_per_hour = 6
+fav_tool_cap_per_hour = 6
+deepseek_api_key = ""
+
+[terminal]
+enabled = true
+confirm_required = true
+workdir_default = "D:\\MarisaBOT"
+timeout_shell_sec = 60.0
+timeout_opencode_sec = 900.0
+output_cap_chars = 1500
+opencode_cmd = "opencode"
+
+[cleanup] # 电脑管家：只读体检 → 计划 → 确认 → 执行
+roots = [] # 清理扫描根白名单；留空回退桌面/下载/文档。文件操作只能落在这些目录里
+project_roots = ["D:/MarisaBOT"] # 代码仓库所在目录（只用于 /项目 审查，不扩大清理白名单）
+large_file_mb = 200 # 大文件阈值
+duplicate_mb = 10 # 参与重复检测的最小文件大小
+max_plan_items = 200 # 单个清理计划的最大条目数
+allow_permanent_delete = false # 是否允许对可再生产物彻底删除（回收站不释放空间）
+plan_ttl_sec = 600 # 清理方案有效期（秒）；过期需要重新生成
+desktop_organize = true # 是否把桌面散落文件纳入清理方案（只移动不删除，可 /撤销）
+desktop_min_age_hours = 24 # 桌面整理只处理超过该小时数没动过的文件

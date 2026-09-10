@@ -1,0 +1,25 @@
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+# 语音由魔理沙自己决定：它调用 marisa_say 工具说话，这一轮就不再发文字。
+# use_hint / length_hint 会在插件加载时拼进工具描述，改完需要热重载插件才生效。
+[voice]
+enabled = true
+min_chars = 3
+max_chars = 60
+send_mode = "file"
+use_hint = "当用户要求用语音、或闲聊里想让回复更生动时使用；纯信息性/指令类的长回答不要用。"
+length_hint = "适合 3-60 字的口语短句，太长会合成很久，太短没必要。"
+
+[service]
+api_url = "http://127.0.0.1:9880"
+ref_audio_path = "D:\\GPT-SoVITS-v4-20250421fix(1)\\GPT-SoVITS-v4-20250422fix\\【默认】哇，你做点心的手艺很不一般啊！去祭典上摆摊的话，肯定会成为最热门的那一个吧！.wav"
+prompt_text = "哇，你做点心的手艺很不一般啊！去祭典上摆摊的话，肯定会成为最热门的那一个吧！"
+prompt_lang = "zh"
+text_lang = "zh"
+speed_factor = 1.0
+synthesize_timeout_sec = 45.0
+auto_start_api = true
+api_start_script = "D:\\GPT-SoVITS-v4-20250421fix(1)\\GPT-SoVITS-v4-20250422fix\\run_api.bat"
+api_start_timeout_sec = 180.0

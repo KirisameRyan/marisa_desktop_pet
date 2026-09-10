@@ -1,0 +1,46 @@
+{
+  "manifest_version": 2,
+  "id": "marisa.voice",
+  "version": "1.0.0",
+  "name": "魔理沙语音",
+  "description": "让魔理沙在 QQ 里按概率用本地 GPT-SoVITS 音色发语音：有时打字、有时发语音条。",
+  "author": {
+    "name": "Marisa Desktop Team",
+    "url": "https://github.com/"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/",
+    "homepage": "https://github.com/",
+    "documentation": "https://github.com/",
+    "issues": "https://github.com/"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "httpx",
+      "version_spec": ">=0.27.0"
+    }
+  ],
+  "capabilities": [
+    "send.custom",
+    "send.text",
+    "config.get"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "plugin_type": "extension"
+}
