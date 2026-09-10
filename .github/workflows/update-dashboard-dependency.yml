@@ -1,15 +1,7 @@
 name: Update Dashboard Dependency
 
+# 个人仓库停用自动触发：依赖更新仅保留手动执行
 on:
-  workflow_run:
-    workflows:
-      - Publish WebUI Dist
-    types:
-      - completed
-    branches:
-      - dev
-  schedule:
-    - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions:

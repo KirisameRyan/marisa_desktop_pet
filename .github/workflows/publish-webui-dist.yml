@@ -1,13 +1,7 @@
 name: Publish WebUI Dist
 
+# 个人仓库停用自动触发：WebUI dist 发布仅保留手动执行（PyPI 凭据不在本仓库）
 on:
-  push:
-    branches:
-      - main
-      - dev
-      - r-dev
-    paths:
-      - "dashboard/**"
   workflow_dispatch:
 
 permissions:

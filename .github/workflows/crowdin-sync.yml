@@ -1,18 +1,8 @@
 name: Crowdin Sync
 
+# 个人仓库停用自动触发：翻译同步仅保留手动执行（上游 Crowdin 凭据不在本仓库）
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 */6 * * *"
-  push:
-    branches:
-      - main
-      - r-dev
-    paths:
-      - "crowdin.yml"
-      - "locales/zh-CN/*.json"
-      - "prompts/zh-CN/**/*.prompt"
-      - "dashboard/src/i18n/locales/zh.json"
 
 permissions:
   contents: write

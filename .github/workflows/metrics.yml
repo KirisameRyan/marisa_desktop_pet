@@ -1,9 +1,8 @@
 name: Metrics
 
+# 个人仓库停用自动触发：指标生成仅保留手动执行
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * *"
 
 permissions:
   contents: write

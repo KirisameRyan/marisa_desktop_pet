@@ -35,6 +35,7 @@ const expectedPaths = [
   '/plugin-config/embed',
   '/plugin-mirrors/embed',
   '/',
+  '/pet',
   '/statistics',
   '/reply-effects',
   '/focus',

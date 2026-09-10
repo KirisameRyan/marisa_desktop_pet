@@ -1,9 +1,8 @@
 name: Star History
 
+# 个人仓库停用自动触发：star 历史仅保留手动执行
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 3 * * 1"
 
 permissions:
   contents: write

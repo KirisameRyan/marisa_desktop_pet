@@ -1,15 +1,7 @@
 name: Docker Build and Push (Main)
 
+# 个人仓库停用自动触发：镜像发布仅保留手动执行（上游 Docker Hub 凭据不在本仓库）
 on:
-  push:
-    branches:
-      - main
-      - classical
-    tags:
-      - "v*.*.*"
-      - "v*"
-      - "*.*.*"
-      - "*.*.*-*"
   workflow_dispatch: # 允许手动触发工作流
     inputs:
       branch:

@@ -422,10 +422,18 @@ describe('LogViewerPage 终端面板', () => {
 
   it('日期筛选只保留窗口内日志，清除后恢复全部', async () => {
     const user = userEvent.setup()
+    // 用「当前月」造数据，避免用例只在某个日期附近才成立
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = now.getMonth() + 1
+    const pad = (value: number) => String(value).padStart(2, '0')
+    const dayStamp = (day: number) => `${year}-${pad(month)}-${pad(day)}`
+    const dayLabel = (day: number) => new RegExp(`${year}年${month}月${day}日`)
+
     logWsMocks.getAllLogs.mockReturnValue([
-      makeLog('early', { message: '月初日志', timestamp: '2026-08-01 08:00:00' }),
-      makeLog('mid', { message: '月中日志', timestamp: '2026-08-13 12:00:00' }),
-      makeLog('late', { message: '月末日志', timestamp: '2026-08-20 18:00:00' }),
+      makeLog('early', { message: '月初日志', timestamp: `${dayStamp(1)} 08:00:00` }),
+      makeLog('mid', { message: '月中日志', timestamp: `${dayStamp(13)} 12:00:00` }),
+      makeLog('late', { message: '月末日志', timestamp: `${dayStamp(20)} 18:00:00` }),
     ])
 
     render(<LogViewerPage />)
@@ -434,7 +442,8 @@ describe('LogViewerPage 终端面板', () => {
 
     await user.click(screen.getByRole('button', { name: /开始日期/ }))
     const startCalendar = await screen.findByRole('grid')
-    await user.click(within(startCalendar).getByRole('button', { name: /10/ }))
+    // 精确到年月日，避免 /10/ 同时命中相邻月份的日期格
+    await user.click(within(startCalendar).getByRole('button', { name: dayLabel(10) }))
 
     expect(screen.queryAllByText('月初日志')).toHaveLength(0)
     expect(screen.getAllByText('月中日志').length).toBeGreaterThan(0)
@@ -443,7 +452,7 @@ describe('LogViewerPage 终端面板', () => {
 
     await user.click(screen.getByRole('button', { name: /结束日期/ }))
     const endCalendar = await screen.findByRole('grid')
-    await user.click(within(endCalendar).getByRole('button', { name: /15/ }))
+    await user.click(within(endCalendar).getByRole('button', { name: dayLabel(15) }))
 
     expect(screen.getAllByText('月中日志').length).toBeGreaterThan(0)
     expect(screen.queryAllByText('月末日志')).toHaveLength(0)

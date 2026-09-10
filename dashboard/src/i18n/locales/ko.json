@@ -31,6 +31,7 @@
     },
     "menu": {
       "home": "홈",
+      "pet": "마리사 데스크톱 펫",
       "focusCompanion": "집중 동반",
       "botMainConfig": "봇 메인 설정",
       "aiModelProvider": "AI 모델 공급자",
@@ -1020,6 +1021,7 @@
     "items": {
       "home": "홈",
       "homeDesc": "대시보드 개요 보기",
+      "petDesc": "마리사 데스크톱 펫 실시간 제어 및 상태 모니터링",
       "focusCompanionDesc": "MaiBot 몰입형 집중 동반 화면 열기",
       "botConfig": "속 메인 설정",
       "botConfigDesc": "속 핵심 설정 구성",

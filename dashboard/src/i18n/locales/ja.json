@@ -31,6 +31,7 @@
     },
     "menu": {
       "home": "ホーム",
+      "pet": "魔理沙デスクトップペット",
       "focusCompanion": "集中コンパニオン",
       "botMainConfig": "ボットメイン設定",
       "aiModelProvider": "AIモデルプロバイダー",
@@ -968,6 +969,7 @@
     "items": {
       "home": "ホーム",
       "homeDesc": "ダッシュボード概要を表示",
+      "petDesc": "魔理沙デスクトップペットの操作と状態確認",
       "focusCompanionDesc": "MaiBot の没入型集中コンパニオンを開く",
       "botConfig": "ボットメイン設定",
       "botConfigDesc": "ボットのコア設定を構成",

@@ -222,6 +222,8 @@ describe('AuthPage URL token 自动登录', () => {
       })
     )
     expect(window.location.hash).toBe('#/login')
+    // 等成功后的跳转落地，避免异步 navigate 泄漏到下一个用例
+    await waitFor(() => expect(navigateMock).toHaveBeenCalledWith({ to: '/' }))
   })
 
   it('URL token 验证失败时错误上屏，token 保留在输入框供修正', async () => {

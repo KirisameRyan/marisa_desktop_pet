@@ -51,9 +51,9 @@ export const menuSections: MenuSection[] = [
       },
       {
         icon: PetConsoleIcon,
-        label: '魔理沙桌宠',
+        label: 'sidebar.menu.pet',
         path: '/pet',
-        searchDescription: '魔理沙桌宠实时控制与状态监控',
+        searchDescription: 'search.items.petDesc',
       },
       { icon: ChatManagementIcon, label: 'sidebar.menu.chatManagement', path: '/chat-management' },
     ],

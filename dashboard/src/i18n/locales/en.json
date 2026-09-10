@@ -31,6 +31,7 @@
     },
     "menu": {
       "home": "Home",
+      "pet": "Marisa Desktop Pet",
       "focusCompanion": "Focus Companion",
       "botMainConfig": "Bot Main Config",
       "aiModelProvider": "AI Model Providers",
@@ -1040,6 +1041,7 @@
     "items": {
       "home": "Home",
       "homeDesc": "View dashboard overview",
+      "petDesc": "Control and monitor the Marisa desktop pet in real time",
       "focusCompanionDesc": "Open MaiBot immersive focus companion",
       "botConfig": "Bot Main Config",
       "botConfigDesc": "Configure bot core settings",

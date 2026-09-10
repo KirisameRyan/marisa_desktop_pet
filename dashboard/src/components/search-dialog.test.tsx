@@ -136,10 +136,11 @@ describe('SearchDialog', () => {
   it('保留与页面共用同一路径的配置项搜索结果', async () => {
     const user = userEvent.setup()
     render(<SearchDialog open onOpenChange={vi.fn()} />)
+    await flushConfigIndex()
 
     await user.type(screen.getByPlaceholderText('search.aiHint'), '人格')
 
-    expect(await screen.findByText('人格设定')).toBeInTheDocument()
+    expect(await screen.findByText('人格设定', undefined, { timeout: 5000 })).toBeInTheDocument()
     expect(screen.queryByText('search.noResults')).not.toBeInTheDocument()
   })
 
@@ -317,13 +318,16 @@ describe('SearchDialog', () => {
   it('Escape 关闭对话框，方向键与 Home/End/Enter 改变选中并导航', async () => {
     const user = userEvent.setup()
     render(<SearchDialog open onOpenChange={onOpenChangeMock} />)
+    // 先等配置索引就绪再输入，避免索引晚到导致查询结果为空
+    await flushConfigIndex()
 
     const input = screen.getByPlaceholderText('search.aiHint')
     fireEvent.keyDown(input, { key: 'Escape' })
     expect(onOpenChangeMock).toHaveBeenCalledWith(false)
 
     await user.type(input, '人格')
-    await screen.findByRole('button', { name: /人格设定/ })
+    // 配置索引异步构建，满负载跑全量测试时 1s 默认超时不够用
+    await screen.findByRole('button', { name: /人格设定/ }, { timeout: 5000 })
     await waitFor(() => {
       expect(resultButtons().length).toBeGreaterThanOrEqual(2)
     })
