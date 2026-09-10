@@ -89,6 +89,13 @@ const focusCompanionRoute = createRoute({
   component: lazyRouteComponent(() => import('./routes/focus'), 'FocusCompanionPage'),
 })
 
+// 魔理沙桌宠控制台路由
+const petConsoleRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: '/pet',
+  component: lazyRouteComponent(() => import('./routes/pet/index'), 'PetConsolePage'),
+})
+
 // 配置路由 - 麦麦主程序配置
 const botConfigRoute = createRoute({
   getParentRoute: () => protectedRoute,
@@ -374,6 +381,7 @@ const routeTree = rootRoute.addChildren([
     statisticsRoute,
     replyEffectsRoute,
     focusCompanionRoute,
+    petConsoleRoute,
     botConfigRoute,
     modelConfigRoute,
     promptManagementRoute,

@@ -262,6 +262,8 @@ class InvokePayload(BaseModel):
 
     component_name: str = Field(description="要调用的组件名称")
     """要调用的组件名称"""
+    component_type: str = Field(default="", description="组件类型；同名 Command 与 Tool 共存时用于消除歧义")
+    """组件类型；同名 Command 与 Tool 共存时用于消除歧义"""
     args: Dict[str, Any] = Field(default_factory=dict, description="调用参数")
     """调用参数"""
 

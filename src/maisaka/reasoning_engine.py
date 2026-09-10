@@ -646,6 +646,7 @@ class MaisakaReasoningEngine:
         state: CycleRuntimeState,
         planner_no_tool_count: int,
         planner_extra_lines: list[str],
+        trigger_message: SessionMessage,
     ) -> tuple[int, bool]:
         """处理 Planner 响应中的工具调用，或无工具输出策略。"""
 
@@ -675,6 +676,7 @@ class MaisakaReasoningEngine:
             ) = await self._handle_tool_calls(
                 response.tool_calls,
                 planner_content,
+                trigger_message,
             )
             cycle_detail.time_records["tool_calls"] = time.time() - tool_started_at
             state.tool_result_summaries = tool_result_summaries
@@ -1075,6 +1077,7 @@ class MaisakaReasoningEngine:
                                 state=state,
                                 planner_no_tool_count=planner_no_tool_count,
                                 planner_extra_lines=state.planner_extra_lines,
+                                trigger_message=trigger_message,
                             )
                             if should_break_after_action:
                                 break
@@ -1542,11 +1545,16 @@ class MaisakaReasoningEngine:
     def _build_tool_execution_context(
         self,
         latest_thought: str,
+        trigger_message: SessionMessage,
     ) -> ToolExecutionContext:
         """构造统一工具执行上下文。
 
+        群聊会话的 ``chat_stream.user_id`` 恒为空，工具无法据此识别调用者，
+        因此把本轮触发消息放进 metadata，供宿主按真实发送者补齐身份。
+
         Args:
             latest_thought: 当前轮的最新思考文本。
+            trigger_message: 本轮触发消息。
 
         Returns:
             ToolExecutionContext: 统一工具执行上下文。
@@ -1561,6 +1569,7 @@ class MaisakaReasoningEngine:
             group_id=str(getattr(chat_stream, "group_id", "") or "").strip(),
             user_id=str(getattr(chat_stream, "user_id", "") or "").strip(),
             platform=str(getattr(chat_stream, "platform", "") or "").strip(),
+            metadata={"anchor_message": trigger_message},
         )
 
     @staticmethod
@@ -2039,12 +2048,14 @@ class MaisakaReasoningEngine:
         self,
         tool_calls: list[ToolCall],
         latest_thought: str,
+        trigger_message: SessionMessage,
     ) -> tuple[bool, str, list[str], list[dict[str, Any]]]:
         """执行一批统一工具调用。
 
         Args:
             tool_calls: 模型返回的工具调用列表。
             latest_thought: 当前轮的最新思考文本。
+            trigger_message: 本轮触发消息，用于给工具补齐真实发送者身份。
 
         Returns:
             tuple[bool, str, list[str], list[dict[str, Any]]]: 是否需要暂停当前思考循环、
@@ -2079,7 +2090,7 @@ class MaisakaReasoningEngine:
                 )
             return False, "", tool_result_summaries, tool_monitor_results
 
-        execution_context = self._build_tool_execution_context(latest_thought)
+        execution_context = self._build_tool_execution_context(latest_thought, trigger_message)
         availability_context = self._build_tool_availability_context()
         tool_spec_map = {
             tool_spec.name: tool_spec

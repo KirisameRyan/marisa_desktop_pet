@@ -581,6 +581,7 @@ class PluginRunnerSupervisor:
         component_name: str,
         args: Optional[Dict[str, Any]] = None,
         timeout_ms: int = 30000,
+        component_type: str = "",
     ) -> Envelope:
         """调用 Runner 内的插件组件。
 
@@ -590,6 +591,7 @@ class PluginRunnerSupervisor:
             component_name: 组件名。
             args: 调用参数。
             timeout_ms: RPC 超时时间，单位毫秒。
+            component_type: 组件类型；同名 Command 与 Tool 共存时用于解析到正确的处理函数。
 
         Returns:
             Envelope: RPC 响应信封。
@@ -598,7 +600,7 @@ class PluginRunnerSupervisor:
         return await self._rpc_server.send_request(
             method,
             plugin_id,
-            {"component_name": component_name, "args": args or {}},
+            {"component_name": component_name, "component_type": component_type, "args": args or {}},
             timeout_ms,
         )
 

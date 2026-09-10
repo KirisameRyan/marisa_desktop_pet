@@ -50,20 +50,12 @@ if ($napcatUp -or $napcatProc) {
     }
 }
 
-# ---------- Key 同步（桌宠 config.json -> MaiBot） ----------
-Write-Host "[同步] 对齐 MaiBot API Key（来源：桌宠配置）..." -ForegroundColor Cyan
-try {
-    $syncScript = Join-Path $Root "pet_core\maibot_key_sync.py"
-    $syncOut = & "$MaiBotDir\.venv\Scripts\python.exe" $syncScript 2>&1
-    Write-Host "  $syncOut" -ForegroundColor DarkYellow
-} catch {
-    Write-Host "  [警告] Key 同步失败：$_" -ForegroundColor Red
-}
+# 模型密钥只有 config/model_config.toml 一份（WebUI「模型配置」页维护），不再需要启动时同步。
 
 # ---------- Step 2: MaiBot ----------
 $maibotUp = Test-PortOpen 8001
 $maibotProc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match 'python' -and $_.CommandLine -match 'MaiBot-1.2.4' }
+    Where-Object { $_.Name -match 'python' -and $_.CommandLine -match [regex]::Escape($MaiBotDir) }
 if ($maibotUp -or $maibotProc) {
     Write-Host "[跳过] MaiBot 已在运行 (8001/进程)" -ForegroundColor DarkYellow
 } else {

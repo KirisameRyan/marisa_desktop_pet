@@ -755,32 +755,46 @@ class ComponentRegistry:
         return component
 
     def _remove_existing_component_entry(self, component: ComponentEntry) -> None:
-        """移除同名旧组件条目。
+        """移除同类型同名旧组件条目。
+
+        组件全名不包含类型，因此 Command 与 Tool 允许同名共存：这里仅在
+        类型一致时执行覆盖，避免同名的跨类型组件被静默摘除。
 
         Args:
             component: 即将写入的新组件条目。
         """
 
-        if component.full_name not in self._components:
+        type_dict = self._by_type.get(component.component_type) or {}
+        old_component = type_dict.get(component.full_name)
+        if old_component is None:
             return
 
-        logger.warning(f"组件 {component.full_name} 已存在，覆盖")
-        old_component = self._components[component.full_name]
+        logger.warning(f"组件 {component.full_name} ({component.component_type.value}) 已存在，覆盖")
         old_list = self._by_plugin.get(old_component.plugin_id)
         if old_list is not None:
             with contextlib.suppress(ValueError):
                 old_list.remove(old_component)
-        if old_type_dict := self._by_type.get(old_component.component_type):
-            old_type_dict.pop(component.full_name, None)
+        type_dict.pop(component.full_name, None)
 
     def _add_component_entry(self, component: ComponentEntry) -> None:
         """写入单个组件条目到全部索引。
+
+        ``_components`` 是按全名的兼容索引，同名的跨类型组件只保留最后注册的
+        那一条；按类型查询请使用 ``get_components_by_type``。
 
         Args:
             component: 待写入的组件条目。
         """
 
         self._remove_existing_component_entry(component)
+
+        existing = self._components.get(component.full_name)
+        if existing is not None and existing.component_type != component.component_type:
+            logger.info(
+                f"组件 {component.full_name} 同时存在于 {existing.component_type.value} 与 "
+                f"{component.component_type.value}，按全名查询将返回后者"
+            )
+
         self._components[component.full_name] = component
         self._by_type[component.component_type][component.full_name] = component
         self._by_plugin.setdefault(component.plugin_id, []).append(component)
@@ -878,7 +892,9 @@ class ComponentRegistry:
         """
         comps = self._by_plugin.pop(plugin_id, [])
         for comp in comps:
-            self._components.pop(comp.full_name, None)
+            # 全名索引可能被同名的其他类型组件占用，只清掉确实指向本条的条目
+            if self._components.get(comp.full_name) is comp:
+                self._components.pop(comp.full_name, None)
             if type_dict := self._by_type.get(comp.component_type):
                 type_dict.pop(comp.full_name, None)
         return len(comps)
@@ -908,17 +924,24 @@ class ComponentRegistry:
                 return False
         return component.enabled
 
-    def toggle_component_status(self, full_name: str, enabled: bool, session_id: Optional[str] = None) -> bool:
+    def toggle_component_status(
+        self,
+        full_name: str,
+        enabled: bool,
+        session_id: Optional[str] = None,
+        component_type: Optional[str] = None,
+    ) -> bool:
         """启用或禁用指定组件。
 
         Args:
             full_name (str): 组件全名
             enabled (bool): 使能情况
             session_id (Optional[str]): 可选的会话ID，仅对该会话禁用（如果提供）
+            component_type (Optional[str]): 可选的组件类型；同名组件跨类型共存时用它消除歧义
         Returns:
             success (bool): 是否成功设置（失败原因通常是组件不存在）
         """
-        comp = self._components.get(full_name)
+        comp = self.get_component(full_name, component_type)
         if comp is None:
             return False
         if session_id:
@@ -930,19 +953,26 @@ class ComponentRegistry:
             comp.enabled = enabled
         return True
 
-    def set_component_enabled(self, full_name: str, enabled: bool, session_id: Optional[str] = None) -> bool:
+    def set_component_enabled(
+        self,
+        full_name: str,
+        enabled: bool,
+        session_id: Optional[str] = None,
+        component_type: Optional[str] = None,
+    ) -> bool:
         """设置指定组件的启用状态。
 
         Args:
             full_name: 组件全名。
             enabled: 目标启用状态。
             session_id: 可选的会话 ID，仅对该会话生效。
+            component_type: 可选的组件类型；同名组件跨类型共存时用它消除歧义。
 
         Returns:
             bool: 是否设置成功。
         """
 
-        return self.toggle_component_status(full_name, enabled, session_id=session_id)
+        return self.toggle_component_status(full_name, enabled, session_id=session_id, component_type=component_type)
 
     def toggle_plugin_status(self, plugin_id: str, enabled: bool, session_id: Optional[str] = None) -> int:
         """批量启用或禁用某插件的所有组件。
@@ -965,14 +995,21 @@ class ComponentRegistry:
                 comp.enabled = enabled
         return len(comps)
 
-    def get_component(self, full_name: str) -> Optional[ComponentEntry]:
+    def get_component(self, full_name: str, component_type: Optional[str] = None) -> Optional[ComponentEntry]:
         """按全名查询。
 
         Args:
             full_name (str): 组件全名
+            component_type (Optional[str]): 可选的组件类型；同名组件跨类型共存时用它消除歧义
         Returns:
             component (Optional[ComponentEntry]): 组件条目，未找到时为 None
         """
+        if component_type:
+            try:
+                normalized_type = self._normalize_component_type(component_type)
+            except ValueError:
+                return None
+            return self._by_type.get(normalized_type, {}).get(full_name)
         return self._components.get(full_name)
 
     def get_components_by_type(
@@ -1157,7 +1194,7 @@ class ComponentRegistry:
             Optional[MessageGatewayEntry]: 若存在则返回消息网关条目。
         """
 
-        component = self._components.get(f"{plugin_id}.{name}")
+        component = self.get_component(f"{plugin_id}.{name}", ComponentTypes.MESSAGE_GATEWAY.value)
         if not isinstance(component, MessageGatewayEntry):
             return None
         if enabled_only and not self.check_component_enabled(component, session_id):

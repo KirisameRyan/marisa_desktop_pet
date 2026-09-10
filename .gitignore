@@ -1,12 +1,16 @@
 data/
-271	# 敏感凭据与配置文件
-272	config.json
-273	
-274	# 三方与本地环境
-275	NapCat.Shell.Windows.Node/
-276	.zcode/
-277	
-278	# Local roleplay benchmark data
+
+# 敏感凭据与配置文件
+config.json
+
+# 三方与本地环境
+NapCat.Shell.Windows.Node/
+.zcode/
+
+# 本地备份文件
+*.bak
+
+# Local roleplay benchmark data
 tools/roleplay_benchmark/
 tools/roleplay_benchmark/data/agent_scores.json
 tools/roleplay_benchmark/data/benchmark_split.json

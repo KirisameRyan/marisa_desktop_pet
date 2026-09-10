@@ -75,11 +75,13 @@ def main():
                 "model": "glm-4.6v-flash"
             },
             "tts": {
-                "engine": "edge",
-                "voice": "zh-CN-XiaoxiaoNeural",
-                "rate": "+15%",
-                "pitch": "+10Hz",
-                "gpt_sovits_api_url": "http://127.0.0.1:9880"
+                "gpt_sovits_api_url": "http://127.0.0.1:9880",
+                "ref_audio_path": r"D:\GPT-SoVITS-v4-20250421fix(1)\GPT-SoVITS-v4-20250422fix\【默认】参考音频.wav",
+                "prompt_text": "参考音频对应的台词",
+                "prompt_lang": "zh",
+                "speed_factor": 1.0,
+                "auto_start_api": True,
+                "api_start_script": r"D:\GPT-SoVITS-v4-20250421fix(1)\GPT-SoVITS-v4-20250422fix\run_api.bat"
             },
             "pet": {
                 "auto_screen_inspect": True,

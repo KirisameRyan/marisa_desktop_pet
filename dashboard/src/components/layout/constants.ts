@@ -12,6 +12,7 @@ import {
   Puzzle,
   Settings,
   Smile,
+  Sparkles,
   Store,
   Wifi,
 } from 'lucide-react'
@@ -36,6 +37,7 @@ const PluginMarketIcon = createStreamlineIcon('store-2-solid', Store)
 const McpIcon = createStreamlineIcon('router-wifi-network-solid', Wifi)
 const DataTransferIcon: MenuIcon = (props) => createElement(HardDrive, props)
 const ReplyEffectsIcon: MenuIcon = (props) => createElement(Activity, props)
+const PetConsoleIcon: MenuIcon = (props) => createElement(Sparkles, props)
 
 export const menuSections: MenuSection[] = [
   {
@@ -46,6 +48,12 @@ export const menuSections: MenuSection[] = [
         label: 'sidebar.menu.home',
         path: '/',
         searchDescription: 'search.items.homeDesc',
+      },
+      {
+        icon: PetConsoleIcon,
+        label: '魔理沙桌宠',
+        path: '/pet',
+        searchDescription: '魔理沙桌宠实时控制与状态监控',
       },
       { icon: ChatManagementIcon, label: 'sidebar.menu.chatManagement', path: '/chat-management' },
     ],

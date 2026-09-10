@@ -7,7 +7,10 @@ BOT_CONSOLE_USER_ID = "local_operator"
 BOT_CONSOLE_BOT_ID = "__maibot_console_bot__"
 MAISAKA_CLI_PLATFORM = "maisaka_cli"
 MAISAKA_CLI_BOT_ID = "__maisaka_cli_bot__"
+DESKTOP_PLATFORM = "desktop"
 LOCAL_OPERATOR_CONFIG_KEY = "is_local_operator"
+# 允许声明为本地操作员的平台：这些都是主人本机上的可信入口
+LOCAL_OPERATOR_PLATFORMS = (BOT_CONSOLE_PLATFORM, DESKTOP_PLATFORM)
 LOCAL_PLATFORM_BOT_IDS: Dict[str, str] = {
     BOT_CONSOLE_PLATFORM: BOT_CONSOLE_BOT_ID,
     MAISAKA_CLI_PLATFORM: MAISAKA_CLI_BOT_ID,
@@ -15,9 +18,17 @@ LOCAL_PLATFORM_BOT_IDS: Dict[str, str] = {
 
 
 def is_local_operator(platform: str, additional_config: Dict[str, Any]) -> bool:
-    """判断一条消息是否来自主程序创建的本地操作员终端。"""
+    """判断一条消息是否来自主人本机的可信入口。
 
-    return platform == BOT_CONSOLE_PLATFORM and additional_config.get(LOCAL_OPERATOR_CONFIG_KEY) is True
+    ``bot_console``（主程序内置终端）与 ``desktop``（桌宠经本机 WS 网关注入）
+    都需要在 additional_config 里显式声明 is_local_operator，避免被同平台
+    的普通消息冒充。
+    """
+
+    return (
+        platform.strip().lower() in LOCAL_OPERATOR_PLATFORMS
+        and additional_config.get(LOCAL_OPERATOR_CONFIG_KEY) is True
+    )
 
 
 def build_scoped_user_id(platform: str, user_id: str) -> str:

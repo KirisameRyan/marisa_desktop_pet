@@ -37,7 +37,7 @@
 
 ### 运行环境要求
 - **操作系统**：Windows 10 / 11 (x64)
-- **运行环境**：已配置好 MaiBot 及其统一虚拟环境（位于 `D:\MaiBot-1.2.4\.venv`）
+- **运行环境**：已配置好 MaiBot 及其统一虚拟环境（位于 `D:\MarisaBOT\.venv`）
 
 ### 一键启动
 双击项目根目录下的 **`启动一体化.bat`**：
@@ -74,32 +74,34 @@
 | `/好感度` | 查询魔理沙与主人的羁绊等级（双端同源） |
 | `/天气 <城市>` | 查询指定城市实时天气情况 |
 | `/提醒 <分钟数> <内容>` | 设置定时桌面通知 |
+| `/体检` | 只读电脑体检：磁盘/回收站/缓存/大文件/重复文件 |
+| `/项目` | 只读审查代码仓库占用与 Git 状态 |
+| `/清理` | 生成清理方案（临时缓存 + 桌面整理），确认后执行 |
+| `/撤销` | 撤销上一次清理（移动还原、回收站尽力找回） |
 
 ---
 
 ## 📂 项目结构说明
 
 ```text
-zhuochong/
-├── assets/                  # 动画精灵与图标素材
-│   └── marisa/             # 魔理沙 54 帧动作序列帧
-├── core/                    # 桌面端核心逻辑
-│   ├── config_manager.py    # 本地配置管理
-│   ├── desktop_actions.py   # 本地动作调度分发器
-│   ├── maibot_client.py     # 双工 WebSocket 通信客户端
-│   ├── maibot_key_sync.py   # API Key 自动化同步工具
-│   ├── ncm_client.py        # 网易云音乐注册表/协议驱动
-│   └── windows.py           # Windows 底层 API 封装
-├── pet/                     # PyQt6 GUI 与交互表现
-│   ├── anim_data.py         # 54 帧动作数据定义与帧序列
-│   ├── comic_bubble.py      # 漫画自适应气泡组件
-│   ├── pet_window.py        # 桌宠主窗口及物理引擎
-│   └── state_machine.py     # 动作状态机调度
-├── run_pet.py               # 桌宠客户端主入口
-├── start_all.ps1            # 一体化幂等启动 PowerShell 脚本
-├── 启动一体化.bat           # 便捷一键启动批处理
-├── 魔理沙远程使用说明.md     # 远程 QQ 端与主人权限详细说明
-└── README.md                # 本文档
+MarisaBOT/
+├── bot.py                     # MaiBot 主入口
+├── src/                       # MaiBot 主程序（宿主：消息链、模型、插件运行时、WebUI）
+├── plugins/                   # 插件目录
+│   ├── marisa_gate/           # 门控 + 远程终端 + 电脑管家（体检/清理/撤销）
+│   └── marisa_desktop/        # 桌宠适配器：WS 网关、桌面原生能力、主动巡检
+├── pet/                       # PyQt6 桌宠表现层（动画、气泡、语音、确认弹窗）
+│   ├── pet_window.py          # 桌宠主窗口及物理引擎
+│   ├── confirm_dialog.py      # 清理方案勾选确认框
+│   └── state_machine.py       # 动作状态机调度
+├── assets/                    # 动画精灵与图标素材
+│   └── marisa/                # 魔理沙 54 帧动作序列帧
+├── config.json                # 桌宠本地配置（WebUI 桌宠页编辑）
+├── run_pet.py                 # 桌宠客户端主入口
+├── start_all.ps1              # 一体化幂等启动 PowerShell 脚本
+├── 启动一体化.bat             # 便捷一键启动批处理
+├── 魔理沙远程使用说明.md       # 远程 QQ 端与主人权限详细说明
+└── README.md                  # 本文档
 ```
 
 ---

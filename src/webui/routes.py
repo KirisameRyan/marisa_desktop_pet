@@ -25,6 +25,7 @@ from src.webui.routers.memory import router as memory_router
 from src.webui.routers.mcp import router as mcp_router
 from src.webui.routers.model import router as model_router
 from src.webui.routers.person import router as person_router
+from src.webui.routers.pet import router as pet_router
 from src.webui.routers.plugin import router as plugin_router
 from src.webui.routers.reasoning_process import router as reasoning_process_router
 from src.webui.routers.reply_effects import router as reply_effects_router
@@ -63,6 +64,8 @@ router.include_router(avatar_router)
 router.include_router(user_emoji_router)
 # 注册插件管理路由
 router.include_router(plugin_router)
+# 注册魔理沙桌宠管理路由
+router.include_router(pet_router)
 # 注册系统控制路由
 router.include_router(system_router)
 router.include_router(data_transfer_router)

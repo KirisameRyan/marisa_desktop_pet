@@ -538,6 +538,7 @@ class ComponentQueryService:
                     component_name=component_name,
                     args=invoke_args,
                     timeout_ms=rpc_timeout_ms,
+                    component_type="COMMAND",
                 )
             except Exception as exc:
                 logger.error(f"运行时 Command {plugin_id}.{component_name} 执行失败: {exc}", exc_info=True)
@@ -597,6 +598,7 @@ class ComponentQueryService:
                     component_name=component_name,
                     args=function_args,
                     timeout_ms=rpc_timeout_ms,
+                    component_type="TOOL",
                 )
             except Exception as exc:
                 logger.error(f"运行时 Tool {plugin_id}.{component_name} 执行失败: {exc}", exc_info=True)
@@ -965,6 +967,7 @@ class ComponentQueryService:
                 component_name=tool_entry.name,
                 args=invoke_payload,
                 timeout_ms=resolve_component_rpc_timeout_ms(tool_entry.timeout_ms),
+                component_type="TOOL",
             )
         except Exception as exc:
             logger.error(f"运行时工具 {tool_entry.plugin_id}.{tool_entry.name} 执行失败: {exc}", exc_info=True)

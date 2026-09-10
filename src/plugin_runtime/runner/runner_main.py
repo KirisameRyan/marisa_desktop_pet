@@ -1250,30 +1250,40 @@ class PluginRunner:
         self._rpc_client.register_method("plugin.unload_batch", self._handle_unload_plugins)
 
     @staticmethod
-    def _resolve_component_handler_name(meta: PluginMeta, component_name: str) -> str:
+    def _resolve_component_handler_name(meta: PluginMeta, component_name: str, component_type: str = "") -> str:
         """解析组件名对应的真实处理函数名。
+
+        同名 Command 与 Tool 共用组件名时，优先用「类型:名字」定位；
+        只有不带类型且没有同名冲突时才回退到按名字解析。
 
         Args:
             meta: 已加载插件的元数据。
             component_name: Host 侧请求中的组件声明名。
+            component_type: 组件类型（如 COMMAND/TOOL），可空。
 
         Returns:
             str: 实际应在插件实例上查找的方法名。
         """
+        normalized_type = str(component_type or "").strip().upper()
+        if normalized_type:
+            scoped = meta.component_handlers.get(f"{normalized_type}:{component_name}")
+            if scoped:
+                return str(scoped)
         return str(meta.component_handlers.get(component_name, component_name) or component_name)
 
-    def _resolve_component_handler(self, meta: PluginMeta, component_name: str) -> Any:
+    def _resolve_component_handler(self, meta: PluginMeta, component_name: str, component_type: str = "") -> Any:
         """根据组件声明名解析插件实例上的可调用处理函数。
 
         Args:
             meta: 已加载插件的元数据。
             component_name: Host 侧请求中的组件声明名。
+            component_type: 组件类型（如 COMMAND/TOOL），用于同名组件消歧。
 
         Returns:
             Any: 解析到的可调用对象；未找到时返回 ``None``。
         """
         instance = meta.instance
-        handler_name = self._resolve_component_handler_name(meta, component_name)
+        handler_name = self._resolve_component_handler_name(meta, component_name, component_type)
         handler_method = getattr(instance, handler_name, None)
         if handler_method is not None:
             return handler_method
@@ -1345,7 +1355,13 @@ class PluginRunner:
 
                 if component_name:
                     handler_name = str(component_metadata.get("handler_name", component_name) or component_name).strip()
-                    meta.component_handlers[component_name] = handler_name or component_name
+                    resolved_handler = handler_name or component_name
+                    meta.component_handlers[component_name] = resolved_handler
+                    # 同名 Command 与 Tool 会共用 component_name，这里再记一份带类型的映射，
+                    # 调用方带上 component_type 时就能解析到正确的处理函数
+                    component_type_key = str(comp_info.get("type", "") or "").strip().upper()
+                    if component_type_key:
+                        meta.component_handlers[f"{component_type_key}:{component_name}"] = resolved_handler
 
                 components.append(
                     ComponentDeclaration(
@@ -2015,7 +2031,7 @@ class PluginRunner:
             )
 
         component_name = invoke.component_name
-        handler_method = self._resolve_component_handler(meta, component_name)
+        handler_method = self._resolve_component_handler(meta, component_name, invoke.component_type)
         inflight = self._start_inflight_rpc(envelope, component_name)
 
         try:
@@ -2121,7 +2137,7 @@ class PluginRunner:
             )
 
         component_name = invoke.component_name
-        handler_method = self._resolve_component_handler(meta, component_name)
+        handler_method = self._resolve_component_handler(meta, component_name, invoke.component_type)
 
         if handler_method is None or not callable(handler_method):
             return envelope.make_error_response(
@@ -2179,7 +2195,7 @@ class PluginRunner:
             )
 
         component_name = invoke.component_name
-        handler_method = self._resolve_component_handler(meta, component_name)
+        handler_method = self._resolve_component_handler(meta, component_name, invoke.component_type)
         if handler_method is None or not callable(handler_method):
             return envelope.make_error_response(
                 ErrorCode.E_METHOD_NOT_ALLOWED.value,

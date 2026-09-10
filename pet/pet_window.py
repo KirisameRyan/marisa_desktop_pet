@@ -1,14 +1,15 @@
 import ctypes
 import ctypes.wintypes
 import os
-import sys
 import random
 import time
+from pathlib import Path
+
 from PyQt6.QtCore import (
-    Qt, QTimer, QPoint, QThread, pyqtSignal, QAbstractNativeEventFilter,
+    Qt, QTimer, QPoint, QAbstractNativeEventFilter,
     QCoreApplication, QUrl,
 )
-from PyQt6.QtGui import QPainter, QPixmap, QAction, QIcon, QCursor, QGuiApplication
+from PyQt6.QtGui import QPainter, QPixmap, QAction, QIcon, QCursor, QGuiApplication, QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget, QMenu, QSystemTrayIcon, QApplication, QInputDialog, QMessageBox,
 )
@@ -17,26 +18,38 @@ from .config import CONFIG, ASSETS_DIR
 from .sprite_loader import SpriteLoader
 from .state_machine import StateMachine, PetState
 from .bubble import ComicBubble
+from .confirm_dialog import CleanupConfirmDialog
 from .input_dialog import ChatInputDialog
 
-# 核心系统引用
-from core.config_manager import APP_CONFIG
-from core.memory import MEMORY_MANAGER
-from core.agent import AgentWorker
+# 核心系统引用（桌宠只做表现层：精灵、气泡、语音播放与本机交互，
+# 推理、记忆、好感度、桌面能力全部在 MaiBot 侧，唯一入口是 8400 网关）
+from core.config_manager import APP_CONFIG, CONFIG_PATH
+from core.recorder import VoiceRecorder
 from core.tts import TTS_ENGINE
-from core.tools import ToolExecutor
-from core.inspector import ProactiveInspectorWorker
-from core.balance import BALANCE_CHECKER
-from core.weather import WEATHER_SERVICE
-from core.reminders import REMINDER_STORE
 from core.maibot_client import MaiBotClient
-from core import ncm_client
 from core import windows as winapi
-from core.desktop_actions import run as run_desktop_action
-from ui.settings_dialog import SettingsDialog
 
 HOTKEY_ID = 0x9A03
 WM_HOTKEY = 0x0312
+
+# 摸头冷却（秒）：好感度由宿主记账，这里只防止连续刷同一个互动
+PAT_COOLDOWN_SEC = 300.0
+
+# 桌宠唯一设置入口：一体化 WebUI 的桌宠页
+WEBUI_PORT = 8001
+WEBUI_PET_URL = f"http://127.0.0.1:{WEBUI_PORT}/pet"
+
+
+def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
+    """探测本机端口是否已监听（判断 WebUI 是否在跑）。"""
+
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 class HotkeyFilter(QAbstractNativeEventFilter):
@@ -56,40 +69,6 @@ class HotkeyFilter(QAbstractNativeEventFilter):
                 print(f"[Hotkey] filter error: {e}")
         return False, 0
 
-
-class MarisaDailyWorker(QThread):
-    """每日一次：检测当天魔理推荐歌单是否已生成，未生成则后台合成。"""
-    speak_signal = pyqtSignal(str)
-
-    def run(self):
-        try:
-            from core.ncm_recommend import ensure_daily
-            res = ensure_daily()
-            if res.get("success") and res.get("created"):
-                count = res.get("count", 0)
-                self.speak_signal.emit(
-                    f"今日魔理推荐已出炉（{count}首）！想听就对魔理沙说「播放推荐歌单」，或点菜单直接切过去连播♪"
-                )
-        except Exception as e:
-            print(f"[MarisaDailyWorker] error: {e}")
-
-
-class DesktopActionWorker(QThread):
-    """MaiBot 下发的桌宠执行动作：后台跑，避免卡 UI。"""
-    done = pyqtSignal(object)
-
-    def __init__(self, req_id: str, action: str, payload: dict, parent=None):
-        super().__init__(parent)
-        self.req_id = req_id
-        self.action = action
-        self.payload = payload or {}
-
-    def run(self):
-        try:
-            result = run_desktop_action(self.action, self.payload)
-        except Exception as e:
-            result = {"text": f"执行失败：{str(e)[:120]}", "image_b64": ""}
-        self.done.emit(result)
 
 class MarisaPetWindow(QWidget):
     def __init__(self):
@@ -118,6 +97,11 @@ class MarisaPetWindow(QWidget):
         self.chat_input = ChatInputDialog()
         self.chat_input.submitted.connect(self._on_user_message)
 
+        # 清理方案确认弹窗（宿主下发 confirm_request 时弹出）
+        self.confirm_dialog = CleanupConfirmDialog()
+        self.confirm_dialog.confirmed.connect(self._on_cleanup_confirmed)
+        self.confirm_dialog.cancelled.connect(self._on_cleanup_cancelled)
+
         # 3. MaiBot 一体化大脑客户端（P2：桌面 ↔ QQ 同一颗大脑）
         self.maibot_enabled: bool = bool(APP_CONFIG.get("msg", "maibot_enabled", False))
         self.maibot_ws: str = str(APP_CONFIG.get("msg", "maibot_ws", "ws://127.0.0.1:8400"))
@@ -128,16 +112,21 @@ class MarisaPetWindow(QWidget):
                 on_reply=self._on_maibot_reply,
                 on_status=self._on_maibot_status,
                 on_connected=self._on_maibot_connected,
-                on_action=self._on_maibot_action,
+                on_confirm=self._on_maibot_confirm_request,
+                on_confirm_closed=self._on_maibot_confirm_closed,
             )
-        
+
+        # 2.1 语音输入（耳朵）：录音在本机，识别与理解全在 MaiBot 主链
+        self.recorder = VoiceRecorder(self)
+        self.recorder.finished.connect(self._on_voice_recorded)
+        self.recorder.failed.connect(self._on_voice_failed)
+        self._last_pat_ts: float = 0.0
+
         # 3. 物理与鼠标交互状态
         self.is_dragging: bool = False
         self.drag_start_pos: QPoint = QPoint()
         self.drag_last_x: int = 0
         self.vy: float = 0.0  # 下落纵向速度
-        self.current_worker: AgentWorker = None
-        self.inspector_worker: ProactiveInspectorWorker = None
         self.tts_enabled: bool = True
 
         # 3.1 爬窗状态（RIDING）
@@ -163,33 +152,24 @@ class MarisaPetWindow(QWidget):
         self.timer.timeout.connect(self._update_loop)
         self.timer.start(CONFIG.tick_interval_ms)
 
-        # 6. 主动视觉巡检定时器
-        self.inspect_timer = QTimer(self)
-        self.inspect_timer.timeout.connect(self._trigger_proactive_inspect)
-        self.auto_inspect_enabled: bool = APP_CONFIG.get("pet", "auto_screen_inspect", True)
-        self.inspect_interval_seconds: int = APP_CONFIG.get("pet", "inspect_interval_seconds", 600)
-        
-        if self.auto_inspect_enabled:
-            self.inspect_timer.start(self.inspect_interval_seconds * 1000)
-
-        # 6.1 切歌播报轮询（3 秒检测一次客户端窗口标题变化）
-        self._last_song_title: str = ""
-        self._last_notify_ts: float = 0.0
+        # 6. 主动视觉巡检与切歌播报均已上移到 MaiBot 侧，桌宠只负责播报推送来的文本
         self.song_notify_enabled: bool = APP_CONFIG.get("pet", "song_notify", True)
-        self.song_timer = QTimer(self)
-        self.song_timer.timeout.connect(self._check_song_change)
-        self.song_timer.start(3000)
 
-        # 6.2 整点报时 + 提醒调度（每 15 秒对一次表）
+        # 6.2 整点报时（每 15 秒对一次表；到点提醒由宿主推送）
         self.hourly_chime_enabled: bool = APP_CONFIG.get("pet", "hourly_chime", False)
         self._last_minute_mark: str = ""
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self._tick_clock)
         self.clock_timer.start(15000)
 
-        # 6.3 每日魔理推荐自动刷新（启动后稍等，避开打招呼）
+        # 6.2.1 配置热重载：WebUI 改完 config.json 后桌宠自动生效，无需重启
+        self._config_mtime: float = self._config_file_mtime()
+        self.config_watch_timer = QTimer(self)
+        self.config_watch_timer.timeout.connect(self._watch_config_file)
+        self.config_watch_timer.start(3000)
+
+        # 6.3 每日魔理推荐歌单由宿主侧生成并推送，桌宠只保留提示开关
         self.marisa_daily_notify_enabled: bool = APP_CONFIG.get("pet", "marisa_daily_notify", True)
-        QTimer.singleShot(20000, self._maybe_run_daily_refresh)
 
         # 6.4 主人离开检测（键鼠空闲判定）
         self.presence_watch_enabled: bool = APP_CONFIG.get("pet", "presence_watch", True)
@@ -238,18 +218,8 @@ class MarisaPetWindow(QWidget):
         # 7. 系统托盘与右键菜单
         self._init_tray()
 
-        # 初始打招呼（新的一天附带陪伴天数）
-        rank_name, _ = MEMORY_MANAGER.get_rank()
-        greeting = f"哟！我是雾雨魔理沙，普通的魔法使だぜ！★ (羁绊: {rank_name})"
-        if not MEMORY_MANAGER.has_greeted_today():
-            day = MEMORY_MANAGER.get_days_together()
-            MEMORY_MANAGER.mark_day_greeted()
-            day_lines = [
-                f"今天是咱俩一起的第 {day} 天，请多指教だぜ！★",
-                f"和你搭伴第 {day} 天了，本魔法使元气满满！★",
-            ]
-            greeting += f" {random.choice(day_lines)}"
-        QTimer.singleShot(600, lambda: self.say(greeting))
+        # 初始打招呼（羁绊与陪伴天数由宿主在回复里给出，这里只报家门）
+        QTimer.singleShot(600, lambda: self.say("哟！我是雾雨魔理沙，普通的魔法使！★ 随时喊我だぜ～"))
 
     def _init_position(self):
         screen = QGuiApplication.primaryScreen()
@@ -289,6 +259,9 @@ class MarisaPetWindow(QWidget):
         chat_action = QAction("💬 跟魔理沙对话", self)
         chat_action.triggered.connect(self.open_chat_input)
 
+        self.voice_action = QAction("🎤 语音输入（点一下说话）", self)
+        self.voice_action.triggered.connect(lambda: self._toggle_voice_input(self.voice_action))
+
         look_screen_act = QAction("👀 观察当前屏幕", self)
         look_screen_act.triggered.connect(lambda: self._on_user_message("看看我的屏幕上有什么？"))
 
@@ -298,9 +271,7 @@ class MarisaPetWindow(QWidget):
         play_like_act = music_menu.addAction("❤️ 播放我喜欢的音乐")
         play_like_act.triggered.connect(lambda: self._play_ncm_playlist_by_name(""))
         my_pl_act = music_menu.addAction("🎧 播放我的歌单…")
-        my_pl_act.triggered.connect(lambda: self._pick_playlist_play())
-        save_song_act = music_menu.addAction("💾 收藏这首歌到宝箱")
-        save_song_act.triggered.connect(lambda: self.say(ToolExecutor.save_current_song_to_playlist()))
+        my_pl_act.triggered.connect(lambda: self._play_ncm_playlist_by_name(""))
         play_fav_act = music_menu.addAction("▶ 播放/切换收藏音乐")
         play_fav_act.triggered.connect(lambda: self._handle_music_action("play"))
         ncm_login_act = music_menu.addAction("📱 扫码登录网易云")
@@ -314,9 +285,6 @@ class MarisaPetWindow(QWidget):
         
         fav_action = QAction("❤️ 查看好感度档案", self)
         fav_action.triggered.connect(self.show_favorability_info)
-
-        inspect_toggle_act = QAction(f"🔍 桌面主动巡检: {'已开启' if self.auto_inspect_enabled else '已关闭'}", self)
-        inspect_toggle_act.triggered.connect(lambda: self.toggle_auto_inspect(inspect_toggle_act))
 
         tts_toggle_act = QAction("🔊 切换语音开关", self)
         tts_toggle_act.triggered.connect(self.toggle_tts)
@@ -334,6 +302,7 @@ class MarisaPetWindow(QWidget):
         quit_action.triggered.connect(QApplication.instance().quit)
 
         tray_menu.addAction(chat_action)
+        tray_menu.addAction(self.voice_action)
         tray_menu.addAction(look_screen_act)
 
         weather_action = QAction("☀️ 实时天气播报", self)
@@ -346,7 +315,6 @@ class MarisaPetWindow(QWidget):
 
         tray_menu.addMenu(music_menu)
         tray_menu.addAction(fav_action)
-        tray_menu.addAction(inspect_toggle_act)
         tray_menu.addAction(tts_toggle_act)
 
         # MaiBot 一体化大脑开关（P2：桌面 ↔ QQ 同源）
@@ -375,8 +343,8 @@ class MarisaPetWindow(QWidget):
         zany_menu = tray_menu.addMenu("🎭 魔理沙整活")
         self._fill_zany_menu(zany_menu)
 
-        settings_action = QAction("⚙️ 魔法配置室 (GUI设置)", self)
-        settings_action.triggered.connect(self.open_settings_dialog)
+        settings_action = QAction("⚙️ 打开 WebUI 设置", self)
+        settings_action.triggered.connect(self.open_webui_settings)
         tray_menu.addAction(clip_act)
         tray_menu.addAction(settings_action)
 
@@ -395,7 +363,7 @@ class MarisaPetWindow(QWidget):
     def _on_tray_activated(self, reason):
         """托盘图标点击：双击呼出魔法配置室，单击召回桌宠"""
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.open_settings_dialog()
+            self.open_webui_settings()
         elif reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._bring_to_front()
 
@@ -404,70 +372,82 @@ class MarisaPetWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self.say("喂！本魔法使在这里呢だぜ！★")
+        self.say("喂！本魔法使在这里呢！★")
+
+    def _ask_host(self, slash: str) -> None:
+        """把一条斜杠指令交给 MaiBot 执行（结果经 WS 回推成气泡 + 语音）。
+
+        桌宠不再自己执行桌面能力：所有功能都在宿主侧实现一份，
+        这里只负责把主人的意图送过去。
+        """
+
+        if not (self.maibot_enabled and self._maibot_connected):
+            self.say("大脑还没连上，先启动一体化だぜ！")
+            return
+        self.maibot.send(slash)
+
+    def _report_favor(self, reason: str, delta: int = 1) -> None:
+        """把本机互动上报给宿主记账（好感度只有宿主那一份）。"""
+
+        if self.maibot_enabled and self._maibot_connected:
+            self.maibot.send_favor(delta, reason)
+
+    def _try_pat(self) -> bool:
+        """摸头：本机只做冷却判断，好感度交给宿主记账。"""
+
+        now = time.time()
+        if now - self._last_pat_ts < PAT_COOLDOWN_SEC:
+            return False
+        self._last_pat_ts = now
+        self._report_favor("摸头互动")
+        return True
+
+    def _toggle_voice_input(self, action_item: QAction = None):
+        """托盘/菜单：开始或结束语音输入。"""
+
+        if self.recorder.is_recording:
+            self.recorder.stop()
+            if action_item:
+                action_item.setText("🎤 语音输入（点一下说话）")
+            return
+        if not (self.maibot_enabled and self._maibot_connected):
+            self.say("大脑还没连上，等我连上再说话だぜ！")
+            return
+        if self.recorder.start():
+            if action_item:
+                action_item.setText("⏹ 正在听…（点一下结束）")
+            self.think("在听主人说话…")
+
+    def _on_voice_recorded(self, audio_base64: str, seconds: float) -> None:
+        """录音结束：上行给宿主识别，识别结果直接进主链。"""
+
+        self.think("让我听听主人说了什么…")
+        self.maibot.send_voice(audio_base64, seconds)
+
+    def _on_voice_failed(self, message: str) -> None:
+        self.say(message)
 
     def _handle_music_action(self, action: str):
-        res = ToolExecutor.control_cloudmusic(action)
-        self.say(res)
+        """播放控制：转成斜杠指令交给宿主。"""
+        slash_map = {"play": "/播放", "pause": "/暂停", "next": "/下一首", "prev": "/上一首"}
+        self._ask_host(slash_map.get(action, "/播放"))
         # 播放音乐时魔理沙坐下打节拍
         if action in ("play", "next", "prev"):
             self.sm.set_state(PetState.SIT)
 
     def _ncm_qrcode_login(self):
-        res = ToolExecutor.login_cloudmusic_qrcode()
-        self.say(res)
+        self._ask_host("/网易云登录")
 
     def _marisa_recommend_playlist(self):
         self.think("正在切到今天的魔理推荐歌单...")
-        res = ToolExecutor.marisa_recommend_playlist()
-        self.say(res)
-        if "魔理推荐" in res and "切" in res:
-            self.sm.set_state(PetState.SIT)
-
-    def _maybe_run_daily_refresh(self):
-        """启动后检查：当天歌单未生成则后台合成（生成成功且开关开 → 语音提示一句）"""
-        if self.is_dragging or self.chat_input.isVisible():
-            QTimer.singleShot(60000, self._maybe_run_daily_refresh)
-            return
-        if self.current_worker and self.current_worker.isRunning():
-            return
-        if not ncm_client.check_login()[0]:
-            return
-        self.daily_worker = MarisaDailyWorker()
-        self.daily_worker.speak_signal.connect(self._on_daily_ready)
-        self.daily_worker.start()
-
-    def _on_daily_ready(self, text: str):
-        if not self.marisa_daily_notify_enabled:
-            return
-        self.say(text)
+        self._ask_host("/推荐歌曲")
         self.sm.set_state(PetState.SIT)
 
     def _play_ncm_playlist_by_name(self, name: str):
+        # 歌单播放统一走宿主的「我喜欢的音乐」入口，不再由桌宠列举歌单
         self.think("正在翻开你的歌单...")
-        res = ToolExecutor.play_cloudmusic_playlist(name)
-        self.say(res)
-        if "已开始播放" in res:
-            self.sm.set_state(PetState.SIT)
-
-    def _pick_playlist_play(self):
-        """弹歌单选单，选中即播第一首。"""
-        if not ncm_client.check_login()[0]:
-            self.say(ToolExecutor.login_cloudmusic_qrcode())
-            return
-        pls = ncm_client.user_playlists()
-        if not pls:
-            self.say("没读到主人的歌单列表だぜ……")
-            return
-        names = [f"{p['name']}（{p['count']}首）" for p in pls if p.get("count")]
-        if not names:
-            self.say("主人好像还没有能播的歌单だぜ……")
-            return
-        names = list(dict.fromkeys(names))[:30]
-        choice, ok = QInputDialog.getItem(self, "选一个歌单", "🎧 要播哪个歌单？", names, 0, False)
-        if ok and choice:
-            real_name = choice.split("（")[0]
-            self._play_ncm_playlist_by_name(real_name)
+        self._ask_host("/我的歌单")
+        self.sm.set_state(PetState.SIT)
 
     def _toggle_song_notify(self, action_item: QAction = None):
         self.song_notify_enabled = not self.song_notify_enabled
@@ -475,7 +455,7 @@ class MarisaPetWindow(QWidget):
         APP_CONFIG.save()
         if action_item:
             action_item.setText(f"🔔 切歌播报: {'开' if self.song_notify_enabled else '关'}")
-        self.say(f"切歌播报已{'开启' if self.song_notify_enabled else '关闭'}だぜ！")
+        self.say(f"切歌播报已{'开启' if self.song_notify_enabled else '关闭'}！")
 
     def _toggle_hourly_chime(self, action_item: QAction = None):
         self.hourly_chime_enabled = not self.hourly_chime_enabled
@@ -483,38 +463,11 @@ class MarisaPetWindow(QWidget):
         APP_CONFIG.save()
         if action_item:
             action_item.setText(f"🕐 整点报时: {'开' if self.hourly_chime_enabled else '关'}")
-        self.say(f"整点报时已{'开启' if self.hourly_chime_enabled else '关闭'}だぜ！")
+        self.say(f"整点报时已{'开启' if self.hourly_chime_enabled else '关闭'}！")
 
     # ---- 切歌播报 ----
-    def _check_song_change(self):
-        if not ncm_client.is_cloudmusic_running():
-            return
-        title = ncm_client.current_title()
-        if not title:
-            self._last_song_title = ""
-            return
-        if title == self._last_song_title:
-            return
-        changed = bool(self._last_song_title)
-        self._last_song_title = title
-        if not changed or not self.song_notify_enabled:
-            return
-        # 避免打断对话/拖拽/思考/讲话
-        if self.is_dragging or self.chat_input.isVisible():
-            return
-        if (self.current_worker and self.current_worker.isRunning()) or \
-           (self.inspector_worker and self.inspector_worker.isRunning()):
-            return
-        if self.sm.state in (PetState.THINKING, PetState.SPEAKING, PetState.WALK, PetState.DRAGGED, PetState.FALL):
-            return
-        import time as _t
-        now = _t.time()
-        if now - self._last_notify_ts < 8.0:
-            return
-        self._last_notify_ts = now
-        self.say(f"♪ 现在放的是：{title}")
-
     # ---- 提醒 / 整点报时调度 ----
+    # 到点提醒由宿主侧扫描并推送（提醒数据在 MaiBot 侧），桌宠只负责播报
     def _tick_clock(self):
         from datetime import datetime
         now = datetime.now()
@@ -525,26 +478,21 @@ class MarisaPetWindow(QWidget):
         # 整点报时
         if self.hourly_chime_enabled and now.minute == 0:
             self._hourly_chime_line(now.hour)
-        # 到期提醒
-        fired = REMINDER_STORE.due_now()
-        for r in fired:
-            self.say(f"⏰ 提醒时间到：{r.get('text', '')}")
 
     def _hourly_chime_line(self, hour: int):
-        from datetime import datetime
         hour_cn = f"{hour:02d}:00"
         if 5 <= hour < 9:
-            tail = "新的一天，元气满满地开始吧だぜ！"
+            tail = "新的一天，元气满满地开始吧！"
         elif 9 <= hour < 12:
             tail = "上午好！要不要泡杯茶继续干活？"
         elif 12 <= hour < 14:
-            tail = "该吃午饭了，别饿着肚子施法だぜ！"
+            tail = "该吃午饭了，别饿着肚子施法！"
         elif 14 <= hour < 18:
             tail = "下午时光，加油吧搭档！"
         elif 18 <= hour < 22:
             tail = "晚上好！注意别熬太晚哦。"
         else:
-            tail = "夜深了，该休息了だぜ……"
+            tail = "夜深了，该休息了……"
         self.say(f"🕐 现在是 {hour_cn}，{tail}")
 
     def _add_reminder_once(self):
@@ -556,119 +504,61 @@ class MarisaPetWindow(QWidget):
         if not ok2:
             return
         minutes_map = {"5 分钟后": 5, "15 分钟后": 15, "30 分钟后": 30, "1 小时后": 60, "2 小时后": 120}
-        from datetime import datetime, timedelta
-        hm = (datetime.now() + timedelta(minutes=minutes_map[mins])).strftime("%H:%M")
-        REMINDER_STORE.add(text.strip(), hm, "once")
-        self.say(f"好，{hm} 会提醒主人：「{text.strip()}」だぜ！")
-
-    def _add_reminder_daily(self):
-        text, ok = QInputDialog.getText(self, "每日定点提醒", "提醒内容：")
-        if not ok or not text.strip():
-            return
-        hm, ok2 = QInputDialog.getText(self, "每日定点提醒", "每天几点提醒？（24小时制 HH:MM，如 09:30）", text="09:00")
-        if not ok2 or len(hm) != 5 or ":" not in hm:
-            return
-        REMINDER_STORE.add(text.strip(), hm.strip(), "daily")
-        self.say(f"好，以后每天 {hm.strip()} 都会提醒主人：「{text.strip()}」だぜ！")
+        self._ask_host(f"/提醒 {minutes_map[mins]} {text.strip()}")
 
     def _list_reminders(self):
-        items = REMINDER_STORE.list_reminders()
-        if not items:
-            self.say("主人还没有设置任何提醒だぜ。")
-            return
-        lines = ["⏰ 主人的提醒："]
-        for i, r in enumerate(items, 1):
-            kind = "每天" if r.get("kind") == "daily" else "单次"
-            lines.append(f"{i}. [{kind} {r.get('time')}] {r.get('text')}")
-        self.say("\n".join(lines))
+        self._ask_host("/提醒列表")
 
     def _delete_reminder(self):
-        items = REMINDER_STORE.list_reminders()
-        if not items:
-            self.say("没有提醒可以删だぜ。")
-            return
-        labels = [f"{r.get('time')} {('每天' if r.get('kind') == 'daily' else '单次')}：{r.get('text')}" for r in items]
-        choice, ok = QInputDialog.getItem(self, "删除提醒", "选择要删除的提醒：", labels, 0, False)
-        if ok and choice:
-            idx = labels.index(choice)
-            REMINDER_STORE.remove(items[idx]["id"])
-            self.say("已删除那条提醒だぜ！")
-
-    def toggle_auto_inspect(self, action_item: QAction = None):
-        self.auto_inspect_enabled = not self.auto_inspect_enabled
-        if self.auto_inspect_enabled:
-            self.inspect_timer.start(self.inspect_interval_seconds * 1000)
-            status_text = f"开启（每 {self.inspect_interval_seconds // 60} 分钟巡检一次）"
-        else:
-            self.inspect_timer.stop()
-            status_text = "已关闭"
-
-        if action_item:
-            action_item.setText(f"🔍 桌面主动巡检: {'已开启' if self.auto_inspect_enabled else '已关闭'}")
-
-        self.say(f"桌面主动巡检已{status_text}だぜ！")
-
-    def set_inspect_interval(self):
-        minutes, ok = QInputDialog.getInt(
-            self, "自定义巡检间隔",
-            "请输入主动巡检间隔时间（单位：分钟，建议5~30分钟）：",
-            int(self.inspect_interval_seconds // 60), 1, 180, 1
-        )
+        index, ok = QInputDialog.getInt(self, "删除提醒", "要删除第几条提醒？（用 /提醒列表 查看编号）", 1, 1, 99, 1)
         if ok:
-            self.inspect_interval_seconds = minutes * 60
-            APP_CONFIG.data["pet"]["inspect_interval_seconds"] = self.inspect_interval_seconds
-            APP_CONFIG.save()
-            if self.auto_inspect_enabled:
-                self.inspect_timer.start(self.inspect_interval_seconds * 1000)
-            self.say(f"巡检间隔已调整为 {minutes} 分钟一次だぜ！★")
+            self._ask_host(f"/提醒删除 {index}")
 
-    def _trigger_proactive_inspect(self):
-        """定时器触发：主动后台截屏分析并搭话"""
-        # 如果正在拖拽、正在聊天或用户正在输入，暂缓本次巡检
-        if self.is_dragging or self.chat_input.isVisible():
+    def open_webui_settings(self):
+        """打开 WebUI 桌宠页（桌宠唯一设置入口）。"""
+        TTS_ENGINE.stop()
+        url = WEBUI_PET_URL
+        if not _port_open(WEBUI_PORT):
+            self.say("先启动一体化（启动一体化.bat），我才能带主人去 WebUI 配置だぜ！")
             return
-        if self.current_worker and self.current_worker.isRunning():
-            return
-        if self.inspector_worker and self.inspector_worker.isRunning():
-            return
-
-        self.inspector_worker = ProactiveInspectorWorker()
-        self.inspector_worker.speak_signal.connect(self.say)
-        self.inspector_worker.start()
+        QDesktopServices.openUrl(QUrl(url))
+        self.say("配置都挪到 WebUI 啦，主人去那边改就行だぜ★")
 
     def show_balance_info(self):
-        """弹出当前 DeepSeek 余额"""
+        """让宿主查一次 DeepSeek 余额"""
         self.think("正在连接 DeepSeek 查询余额...")
-        ok, msg, _ = BALANCE_CHECKER.query_balance()
-        if ok:
-            self.say(f"报告搭档！你的 DeepSeek 账户{msg}，魔法能量充裕だぜ！★")
-        else:
-            self.say(f"查询余额遇到问题：{msg}")
+        self._ask_host("/余额")
 
     def show_weather_info(self):
-        """弹出实时天气"""
+        """问主人要城市后交给宿主查天气"""
+        city, ok = QInputDialog.getText(self, "实时天气", "要查哪座城市？（如 上海 / 东京）")
+        if not ok or not city.strip():
+            return
         self.think("正在观察天空气象...")
-        ok, summary, _ = WEATHER_SERVICE.get_weather()
-        if ok:
-            self.say(f"{summary}\n出门要注意防护，元气满满地开始吧だぜ！★")
-        else:
-            self.say(f"天气侦测遇到问题：{summary}")
+        self._ask_host(f"/天气 {city.strip()}")
 
-    def open_settings_dialog(self):
-        """打开 PyQt6 原生设置与向导 GUI"""
-        TTS_ENGINE.stop()
-        dlg = SettingsDialog(self)
-        dlg.config_saved.connect(self._on_settings_reloaded)
-        dlg.exec()
+    @staticmethod
+    def _config_file_mtime() -> float:
+        """读取 config.json 的修改时间，缺失时返回 0。"""
 
-    def _on_settings_reloaded(self):
-        """当用户在 GUI 中修改并保存配置后即时热重载"""
-        self.auto_inspect_enabled = APP_CONFIG.get("pet", "auto_screen_inspect", True)
-        self.inspect_interval_seconds = APP_CONFIG.get("pet", "inspect_interval_seconds", 600)
-        if self.auto_inspect_enabled:
-            self.inspect_timer.start(self.inspect_interval_seconds * 1000)
-        else:
-            self.inspect_timer.stop()
+        try:
+            return CONFIG_PATH.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _watch_config_file(self):
+        """配置文件被外部（WebUI）改写时即时热重载。
+
+        桌宠不再是配置入口，WebUI 编辑 config.json 后靠这里生效，
+        因此重载保持静默，不弹气泡也不播音。
+        """
+        current = self._config_file_mtime()
+        if current and current != self._config_mtime:
+            self._config_mtime = current
+            self._on_settings_reloaded(announce=False)
+
+    def _on_settings_reloaded(self, announce: bool = True):
+        """当配置被修改后即时热重载（announce=False 时静默生效）"""
         self.song_notify_enabled = bool(APP_CONFIG.get("pet", "song_notify", True))
         self.hourly_chime_enabled = bool(APP_CONFIG.get("pet", "hourly_chime", False))
         self.marisa_daily_notify_enabled = bool(APP_CONFIG.get("pet", "marisa_daily_notify", True))
@@ -680,13 +570,7 @@ class MarisaPetWindow(QWidget):
         self._apply_hotkey()
         self.zany_auto = bool(APP_CONFIG.get("pet", "zany_auto", True))
         self.zany_level = int(APP_CONFIG.get("pet", "zany_level", 1))
-        # Key 单源化：保存设置后同步给 MaiBot（重启 MaiBot 生效）
-        try:
-            from core.maibot_key_sync import sync_keys
-            msg = sync_keys()
-            print(f"[KeySync] {msg}")
-        except Exception as e:
-            print(f"[KeySync] error: {e}")
+        # 模型密钥不在这里同步：密钥只有 config/model_config.toml 一份，由 WebUI 模型配置页维护
         # MaiBot 一体化大脑配置热重载
         maibot_new_state = bool(APP_CONFIG.get("msg", "maibot_enabled", False))
         if maibot_new_state != self.maibot_enabled:
@@ -696,7 +580,8 @@ class MarisaPetWindow(QWidget):
                     on_reply=self._on_maibot_reply,
                     on_status=self._on_maibot_status,
                     on_connected=self._on_maibot_connected,
-                    on_action=self._on_maibot_action,
+                    on_confirm=self._on_maibot_confirm_request,
+                    on_confirm_closed=self._on_maibot_confirm_closed,
                 )
             else:
                 self.maibot.stop()
@@ -704,7 +589,8 @@ class MarisaPetWindow(QWidget):
             if hasattr(self, "maibot_act"):
                 self.maibot_act.setText(f"🧠 MaiBot 一体化大脑: {'开' if self.maibot_enabled else '关'}")
         self._apply_scale(float(APP_CONFIG.get("pet", "scale", 1.0)))
-        self.say("魔法配置已即时更新并生效だぜ！★")
+        if announce:
+            self.say("魔法配置已即时更新并生效！★")
 
     def _apply_scale(self, scale: float):
         """实时应用新的桌宠缩放倍率，无需重启"""
@@ -732,14 +618,11 @@ class MarisaPetWindow(QWidget):
         status = "开启" if self.tts_enabled else "关闭"
         if not self.tts_enabled:
             TTS_ENGINE.stop()
-        self.say(f"语音播报已{status}だぜ！")
+        self.say(f"语音播报已{status}！")
 
     def show_favorability_info(self):
-        fav = MEMORY_MANAGER.get_favorability()
-        rank_name, rank_desc = MEMORY_MANAGER.get_rank()
-        count = MEMORY_MANAGER.profile.get("interaction_count", 0)
-        day = MEMORY_MANAGER.get_days_together()
-        self.say(f"【好感度】: {fav}/100\n【当前羁绊】: {rank_name}\n【互动次数】: {count} 次\n【陪伴天数】: 第 {day} 天★\n{rank_desc}")
+        """好感度、羁绊与陪伴天数都由宿主回答（数据只有那一份）。"""
+        self._ask_host("/好感度")
 
     def _update_loop(self):
         dt = CONFIG.tick_interval_ms / 1000.0
@@ -902,24 +785,36 @@ class MarisaPetWindow(QWidget):
             time_word = "下午"
         else:
             time_word = "晚上"
-        fav = MEMORY_MANAGER.get_favorability()
+        # 好感度越高，回来时的口吻越亲近（具体数值由宿主记账，这里只读一次用于选台词）
+        fav = self._cached_favorability()
         if fav >= 80:
             lines = [
                 f"欢迎回来！{time_word}好，我刚刚梦见和你去雾之湖钓星星了～★",
-                "回来啦！刚才我小憩了一下，梦里的星星比现实还亮だぜ！",
+                "回来啦！刚才我小憩了一下，梦里的星星比现实还亮！",
             ]
         elif fav >= 50:
             lines = [
-                f"回来啦？{time_word}好だぜ！我刚刚偷懒眯了一会儿……",
-                "欢迎回来！刚打完盹，正好有精神陪你だぜ！",
+                f"回来啦？{time_word}好！我刚刚偷懒眯了一会儿……",
+                "欢迎回来！刚打完盹，正好有精神陪你！",
             ]
         else:
             lines = [
                 "哦，回来了啊。我……才没有等你呢！",
                 f"{time_word}好。你不在的时候我可没偷懒哦！",
             ]
-        MEMORY_MANAGER.add_favorability(1, "主人回来啦")
+        self._report_favor("主人回来啦")
         self.say(random.choice(lines))
+
+    def _cached_favorability(self) -> int:
+        """读一次好感度文件用于选台词（只读；写入一律由宿主负责）。"""
+
+        try:
+            import json as _json
+
+            path = Path(__file__).resolve().parent.parent / "data" / "marisa" / "favorability.json"
+            return int(_json.loads(path.read_text(encoding="utf-8")).get("favorability", 0))
+        except Exception:
+            return 0
 
     # ---------------- 全局热键 ----------------
     HOTKEY_PRESETS = [
@@ -953,8 +848,6 @@ class MarisaPetWindow(QWidget):
     def _notify_hotkey_fallback(self):
         if not self._hotkey_fallback or not self._effective_combo:
             return
-        from core import windows as _w
-        vk_mods = _w.hotkey_to_vk_mods(self._effective_combo)
         label = self._effective_combo.upper().replace("+", "+")
         self.say(f"你设置的呼叫我热键被别的软件占了，我改用 {label} 啦！可在设置里换一个♪")
 
@@ -973,7 +866,7 @@ class MarisaPetWindow(QWidget):
     def _climb_foreground(self):
         hwnd = winapi.foreground_window()
         if not hwnd or hwnd == int(self.winId()):
-            self.say("前面没有可以爬的窗口だぜ？点一下你想让我爬上去的窗口再喊我♪")
+            self.say("前面没有可以爬的窗口？点一下你想让我爬上去的窗口再喊我♪")
             return
         self._attach_ride(hwnd, by_menu=True)
 
@@ -982,13 +875,13 @@ class MarisaPetWindow(QWidget):
             return
         cls = winapi.window_class_name(hwnd)
         if cls in ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
-            self.say("那可是桌面/任务栏，才不是窗口だぜ！")
+            self.say("那可是桌面/任务栏，才不是窗口！")
             return
         if not winapi.is_window_visible(hwnd) or winapi.is_window_minimized(hwnd):
-            self.say("那个窗口看不见也爬不了だぜ……")
+            self.say("那个窗口看不见也爬不了……")
             return
         if winapi.is_fullscreen_primary(hwnd):
-            self.say("全屏画面我可不能挡着主人だぜ，先老实待在下面！")
+            self.say("全屏画面我可不能挡着主人，先老实待在下面！")
             return
         self.ride_hwnd = hwnd
         self.ride_kind = kind
@@ -1007,11 +900,11 @@ class MarisaPetWindow(QWidget):
         self._sync_ride_position()
         if by_menu:
             if kind == "bottom":
-                self._quiet_bubble("倒吊金钩だぜ！本魔法使吊在窗口下面喽！🦇")
+                self._quiet_bubble("倒吊金钩！本魔法使吊在窗口下面喽！🦇")
             elif kind.startswith("side"):
-                self._quiet_bubble("沿墙往上爬，可别手滑だぜ！🧗")
+                self._quiet_bubble("沿墙往上爬，可别手滑！🧗")
             else:
-                self._quiet_bubble("哼哼，看本魔法使飞上去だぜ！🧗")
+                self._quiet_bubble("哼哼，看本魔法使飞上去！🧗")
 
     def _detach_ride(self, speak: bool = True):
         if not self.ride_hwnd and not self.ride_kind:
@@ -1027,7 +920,7 @@ class MarisaPetWindow(QWidget):
         self.move(max(min_x, min(max_x, self.x())), ground_y)
         self._sync_bubble_pos()
         if speak:
-            self.say("跳下来啦！还是地面踏实だぜ！")
+            self.say("跳下来啦！还是地面踏实！")
 
     def _sync_ride_position(self):
         # 吊天花板：不依赖宿主窗口
@@ -1062,7 +955,7 @@ class MarisaPetWindow(QWidget):
             ground_y = self._get_ground_y()
             self.move(self.x(), ground_y)
             self.sm.set_idle_pose("stand")
-            self._quiet_bubble("它变全屏了，我先下来了だぜ！")
+            self._quiet_bubble("它变全屏了，我先下来了！")
             return False
         left, top, right, bottom = rect
         win_w, win_h = self.width(), self.height()
@@ -1099,7 +992,7 @@ class MarisaPetWindow(QWidget):
             if self.y() <= top + 4:
                 self.ride_kind = "top"
                 self.sm.set_state(PetState.RIDING)
-                self._quiet_bubble("到顶了！翻身上窗だぜ！")
+                self._quiet_bubble("到顶了！翻身上窗！")
             self.move(target_x, target_y)
             self._sync_bubble_pos()
             return True
@@ -1118,9 +1011,6 @@ class MarisaPetWindow(QWidget):
     # ---------------- 行为导演（Shimeji 化地面日常/看鼠标/贴近窗口整活） ----------------
     def _floor_idle_ok(self) -> bool:
         if self.is_dragging or self.ride_hwnd or self.chat_input.isVisible():
-            return False
-        if (self.current_worker and self.current_worker.isRunning()) or \
-           (self.inspector_worker and self.inspector_worker.isRunning()):
             return False
         return self.sm.state in (
             PetState.IDLE, PetState.WALK, PetState.RUN, PetState.CRAWL,
@@ -1299,7 +1189,7 @@ class MarisaPetWindow(QWidget):
             return
         self._attach_ride(hwnd, kind="bottom")
         if speak and self.ride_hwnd:
-            self._quiet_bubble("吊住啦！窗口下面凉快だぜ！🦇")
+            self._quiet_bubble("吊住啦！窗口下面凉快！🦇")
 
     def _do_hang_ceiling(self, speak: bool = True):
         self.ride_hwnd = 0
@@ -1312,7 +1202,7 @@ class MarisaPetWindow(QWidget):
         geo = screen.availableGeometry()
         self.move(self.x(), geo.top() + 2)
         if speak:
-            self._quiet_bubble("挂在天花板上偷个懒だぜ！🦇")
+            self._quiet_bubble("挂在天花板上偷个懒！🦇")
 
     def _do_hang_move_toggle(self, moving: bool):
         self.sm.change_hang_motion(moving)
@@ -1322,7 +1212,7 @@ class MarisaPetWindow(QWidget):
             return
         self._attach_ride(hwnd, kind=side)
         if speak and self.ride_hwnd:
-            self._quiet_bubble("爬墙特训开始！だぜ！")
+            self._quiet_bubble("爬墙特训开始！！")
 
     # ---------------- 窗口推搡 / 扛窗 ----------------
     def _do_push(self, hwnd: int, direction: int, speak: bool = True):
@@ -1405,7 +1295,7 @@ class MarisaPetWindow(QWidget):
     def _need_target(self) -> int:
         hwnd = self._current_target_window()
         if not hwnd:
-            self.say("附近没找到能整活的窗口だぜ……先点一下目标窗口，再让魔理沙干活！")
+            self.say("附近没找到能整活的窗口……先点一下目标窗口，再让魔理沙干活！")
         return hwnd
 
     def _fill_zany_menu(self, menu: QMenu):
@@ -1491,7 +1381,7 @@ class MarisaPetWindow(QWidget):
     def _manual_push(self, hwnd: int):
         rect = winapi.window_rect(hwnd)
         if not rect:
-            self.say("那个窗口已经不见了だぜ……")
+            self.say("那个窗口已经不见了……")
             return
         cx = self.frameGeometry().center().x()
         direction = 1 if cx < (rect[0] + rect[2]) // 2 else -1
@@ -1550,7 +1440,7 @@ class MarisaPetWindow(QWidget):
         self._carry_to_floor = to_floor
         self._carry_settled = False
         if speak:
-            self.say("跑到窗边……准备扛起它だぜ！")
+            self.say("跑到窗边……准备扛起它！")
         return True
 
     def _tick_carry(self):
@@ -1630,7 +1520,7 @@ class MarisaPetWindow(QWidget):
         self._carry_hwnd = 0
         self._carry_phase = 0
         self.sm.set_idle_pose("stand")
-        self.say("放好啦！搬运完成だぜ！")
+        self.say("放好啦！搬运完成！")
 
     def _cancel_carry(self):
         self._carry_hwnd = 0
@@ -1641,7 +1531,7 @@ class MarisaPetWindow(QWidget):
         """兼容旧调用：立即中止（双击放下）。"""
         self._cancel_carry()
         if speak:
-            self.say("放下啦だぜ！")
+            self.say("放下啦！")
 
     def _tick_push(self):
         if not self._push_hwnd:
@@ -1688,41 +1578,26 @@ class MarisaPetWindow(QWidget):
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
-            self.say("哼，胆小鬼！我早就知道你会反悔だぜ！")
+            self.say("哼，胆小鬼！我早就知道你会反悔！")
             return
         ok = winapi.trash_files(paths)
         if ok:
-            MEMORY_MANAGER.add_favorability(1, "魔法删除")
+            self._report_favor("魔法删除")
             self.sm.set_state(PetState.SIT)
-            self.say(f"限！界！火！花！《{shown}》已被魔法送进回收站，想救它还来得及だぜ！★")
+            self.say(f"限！界！火！花！《{shown}》已被魔法送进回收站，想救它还来得及！★")
         else:
-            self.say("呜……那个东西好像有结界保护，我没删动它だぜ！")
-
-    # ---------------- 陪伴天数 ----------------
-    def _days_line(self) -> str:
-        day = MEMORY_MANAGER.get_days_together()
-        return f"\n【陪伴天数】：在一起的第 {day} 天"
+            self.say("呜……那个东西好像有结界保护，我没删动它！")
 
     def _on_user_message(self, message: str):
-        """收到用户输入：优先走 MaiBot 一体化大脑；否则走本地 AgentWorker"""
-        # 大脑模式下把消息上交给 MaiBot（QQ/桌面记忆同一份）
-        if self.maibot_enabled and self._maibot_connected:
-            self.think("让我想想看...")
-            self.maibot.send(message)
+        """收到用户输入：交给 MaiBot（QQ 与桌面共用同一颗大脑）。
+
+        桌宠不再有本地大脑：没连上就明确告诉主人，而不是偷偷换一个模型回答。
+        """
+        if not (self.maibot_enabled and self._maibot_connected):
+            self.say("大脑还没连上呢，先启动一体化だぜ！")
             return
-
         self.think("让我想想看...")
-
-        # 停止上一个可能还在运行的 Worker
-        if self.current_worker and self.current_worker.isRunning():
-            self.current_worker.quit()
-            self.current_worker.wait()
-
-        self.current_worker = AgentWorker(message)
-        self.current_worker.thinking_signal.connect(self.think)
-        self.current_worker.reply_signal.connect(self.say)
-        self.current_worker.tool_executed_signal.connect(lambda name, res: print(f"[Tool] {name}: {res}"))
-        self.current_worker.start()
+        self.maibot.send(message)
 
     # ---------------- MaiBot 一体化大脑接入 ----------------
     def _on_maibot_reply(self, text: str):
@@ -1738,63 +1613,39 @@ class MarisaPetWindow(QWidget):
         self._maibot_connected = bool(ok)
         if ok and not hasattr(self, "_maibot_greeted"):
             self._maibot_greeted = True
-            self._quiet_bubble("和 MaiBot 大脑连上了だぜ！现在桌面和 QQ 是同一只魔理沙★")
+            self._quiet_bubble("和 MaiBot 大脑连上了！现在桌面和 QQ 是同一只魔理沙★")
         print(f"[MaiBot] connected={ok}")
 
-    def _on_maibot_action(self, data):
-        """MaiBot 下发执行动作：播放/歌单/应用/提醒/剪贴板/网易云扫码等。"""
-        try:
-            req_id = str((data or {}).get("req_id") or "")
-            action = str((data or {}).get("action") or "")
-            payload = (data or {}).get("payload") or {}
-        except Exception:
+    # ---------------- 清理方案确认弹窗 ----------------
+    def _on_maibot_confirm_request(self, payload):
+        """宿主下发清理方案：在魔理沙头顶弹出勾选确认框。"""
+        if not isinstance(payload, dict):
             return
-        if not req_id or not action:
-            return
+        anchor = QPoint(
+            self.x() + (self.width() - self.confirm_dialog.width()) // 2,
+            max(20, self.y() - self.confirm_dialog.height() - 10),
+        )
+        self.confirm_dialog.show_request(payload, anchor)
+        self._quiet_bubble("清理方案来了，看看弹窗要清哪些だぜ！")
 
-        # 播报类开关（需要本窗口状态）就地处理
-        if action == "toggle":
-            target = str(payload.get("target") or "")
-            if target == "song_notify":
-                self.song_notify_enabled = not self.song_notify_enabled
-                APP_CONFIG.data["pet"]["song_notify"] = self.song_notify_enabled
-                APP_CONFIG.save()
-                state = "开" if self.song_notify_enabled else "关"
-                self.maibot.send_action_result(req_id, True, f"切歌播报已{state}だぜ！")
-                self.say(f"切歌播报已{state}だぜ！")
-            elif target == "hourly_chime":
-                self.hourly_chime_enabled = not self.hourly_chime_enabled
-                APP_CONFIG.data["pet"]["hourly_chime"] = self.hourly_chime_enabled
-                APP_CONFIG.save()
-                state = "开" if self.hourly_chime_enabled else "关"
-                self.maibot.send_action_result(req_id, True, f"整点报时已{state}だぜ！")
-                self.say(f"整点报时已{state}だぜ！")
-            return
+    def _on_maibot_confirm_closed(self, req_id: str):
+        """宿主通知关闭弹窗（QQ 端已确认/取消，或方案被替换）。"""
+        self.confirm_dialog.close_request(str(req_id or ""))
 
-        # 串行化：上一动作未完成时直接回忙碌
-        if getattr(self, "_action_worker", None) and self._action_worker.isRunning():
-            self.maibot.send_action_result(req_id, False, "桌宠正在忙上一件事だぜ，稍等再喊我★")
+    def _on_cleanup_confirmed(self, selected, permanent):
+        """弹窗点「执行清理」：把勾选结果回传宿主执行。"""
+        if not (self.maibot_enabled and self._maibot_connected):
+            self.say("大脑还没连上，方案没法确认だぜ…")
             return
+        self.maibot.send_confirm_result(self.confirm_dialog.req_id, True, selected, permanent)
+        self.think("收到，开始执行清理…")
 
-        worker = DesktopActionWorker(req_id, action, payload)
-        worker.done.connect(self._on_action_done)
-        self._action_worker = worker
-        worker.start()
-
-    def _on_action_done(self, result):
-        """动作完成：回传 MaiBot（回 QQ）+ 本机气泡语音播报。"""
-        try:
-            req_id = self._action_worker.req_id
-        except Exception:
+    def _on_cleanup_cancelled(self):
+        """弹窗点「取消」：把取消结果回传宿主。"""
+        if not (self.maibot_enabled and self._maibot_connected):
             return
-        text = str((result or {}).get("text") or "搞定だぜ！")
-        image_b64 = str((result or {}).get("image_b64") or "")
-        ok = True
-        if "执行失败" in text or "失败" in text[:8]:
-            ok = False
-        self.maibot.send_action_result(req_id, ok, text, image_b64)
-        if text and not image_b64:
-            self.say(text[:200])
+        self.maibot.send_confirm_result(self.confirm_dialog.req_id, False, [], False)
+        self.say("好，方案取消だぜ。")
 
     def _toggle_maibot(self):
         """托盘菜单：开关 MaiBot 一体化大脑。"""
@@ -1806,13 +1657,14 @@ class MarisaPetWindow(QWidget):
                 on_reply=self._on_maibot_reply,
                 on_status=self._on_maibot_status,
                 on_connected=self._on_maibot_connected,
-                on_action=self._on_maibot_action,
+                on_confirm=self._on_maibot_confirm_request,
+                on_confirm_closed=self._on_maibot_confirm_closed,
             )
         else:
             self.maibot.stop()
             self._maibot_connected = False
         self.maibot_act.setText(f"🧠 MaiBot 大脑: {'开' if self.maibot_enabled else '关'}")
-        self._quiet_bubble(f"MaiBot 一体化大脑已{'开启' if self.maibot_enabled else '关闭'}だぜ！")
+        self._quiet_bubble(f"MaiBot 一体化大脑已{'开启' if self.maibot_enabled else '关闭'}！")
 
     def _try_attach_under_cursor(self) -> bool:
         """拖拽松手时，若魔理沙正贴近某个窗口顶部，则吸附骑上去。"""
@@ -1866,7 +1718,7 @@ class MarisaPetWindow(QWidget):
                 self._end_carry()
                 self._push_hwnd = 0
                 self.sm.set_idle_pose("stand")
-                self.say("放下啦だぜ！")
+                self.say("放下啦！")
                 event.accept()
                 return
             if self.ride_hwnd or self.ride_kind == "ceiling":
@@ -1874,12 +1726,12 @@ class MarisaPetWindow(QWidget):
                 event.accept()
                 return
             # 摸头互动检测
-            patted, fav = MEMORY_MANAGER.try_pat()
+            patted = self._try_pat()
             if patted:
                 pat_responses = [
-                    f"嘿嘿，摸摸头很舒服だぜ！★ (好感度+1 -> {fav})",
-                    f"呜哇！突然摸头，本魔法使也是会害羞的啦！(好感度+1 -> {fav})",
-                    f"好搭档！今天也一起在桌面大冒险吧！(好感度+1 -> {fav})"
+                    "嘿嘿，摸摸头很舒服！★",
+                    "呜哇！突然摸头，本魔法使也是会害羞的啦！",
+                    "好搭档！今天也一起在桌面大冒险吧！",
                 ]
                 self.say(random.choice(pat_responses))
             else:
@@ -1911,6 +1763,9 @@ class MarisaPetWindow(QWidget):
         chat_act = menu.addAction("💬 对话...")
         chat_act.triggered.connect(self.open_chat_input)
 
+        voice_act = menu.addAction("🎤 语音输入（点一下说话）")
+        voice_act.triggered.connect(lambda: self._toggle_voice_input(voice_act))
+
         look_screen_act = menu.addAction("👀 观察当前屏幕")
         look_screen_act.triggered.connect(lambda: self._on_user_message("看看我的电脑屏幕，现在有什么？"))
 
@@ -1926,9 +1781,7 @@ class MarisaPetWindow(QWidget):
         play_like_act = music_menu.addAction("❤️ 播放我喜欢的音乐")
         play_like_act.triggered.connect(lambda: self._play_ncm_playlist_by_name(""))
         my_pl_act = music_menu.addAction("🎧 播放我的歌单…")
-        my_pl_act.triggered.connect(lambda: self._pick_playlist_play())
-        save_song_act = music_menu.addAction("💾 收藏这首歌到宝箱")
-        save_song_act.triggered.connect(lambda: self.say(ToolExecutor.save_current_song_to_playlist()))
+        my_pl_act.triggered.connect(lambda: self._play_ncm_playlist_by_name(""))
         play_fav_act = music_menu.addAction("▶ 播放/切换收藏音乐")
         play_fav_act.triggered.connect(lambda: self._handle_music_action("play"))
         ncm_login_act = music_menu.addAction("📱 扫码登录网易云")
@@ -1941,14 +1794,12 @@ class MarisaPetWindow(QWidget):
         fav_act = menu.addAction("❤️ 查看好感度与羁绊")
         fav_act.triggered.connect(self.show_favorability_info)
 
-        inspect_menu = menu.addMenu("🔍 桌面主动巡检")
-        inspect_toggle_act = inspect_menu.addAction(f"开关状态: {'【已开启】' if self.auto_inspect_enabled else '【已关闭】'}")
-        inspect_toggle_act.triggered.connect(lambda: self.toggle_auto_inspect())
-        inspect_set_act = inspect_menu.addAction(f"⏱ 修改间隔时间 (当前: {self.inspect_interval_seconds // 60} 分钟)")
-        inspect_set_act.triggered.connect(self.set_inspect_interval)
+        inspect_menu = menu.addMenu("🔍 桌面主动巡检（已上移到 WebUI 设置）")
+        inspect_toggle_act = inspect_menu.addAction("打开桌宠行为设置…")
+        inspect_toggle_act.triggered.connect(self.open_webui_settings)
 
-        settings_act = menu.addAction("⚙️ 魔法配置室 (GUI设置)")
-        settings_act.triggered.connect(self.open_settings_dialog)
+        settings_act = menu.addAction("⚙️ 打开 WebUI 设置")
+        settings_act.triggered.connect(self.open_webui_settings)
 
         tts_act = menu.addAction("🔊 切换语音播报")
         tts_act.triggered.connect(self.toggle_tts)
@@ -2005,10 +1856,6 @@ class MarisaPetWindow(QWidget):
                 self.maibot.stop()
         except Exception:
             pass
-        if self.inspect_timer.isActive():
-            self.inspect_timer.stop()
-        if self.song_timer.isActive():
-            self.song_timer.stop()
         if self.clock_timer.isActive():
             self.clock_timer.stop()
         if self.presence_timer.isActive():
@@ -2018,4 +1865,5 @@ class MarisaPetWindow(QWidget):
         winapi.unregister_hotkey(int(self.winId()), HOTKEY_ID)
         self.bubble.close()
         self.chat_input.close()
+        self.confirm_dialog.close()
         super().closeEvent(event)

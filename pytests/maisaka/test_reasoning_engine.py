@@ -28,15 +28,27 @@ class _ToolRegistryStub:
     def __init__(self, results: list[ToolExecutionResult]) -> None:
         self._results = list(results)
         self.invoked_tool_names: list[str] = []
+        self.invocation_contexts: list[ToolExecutionContext] = []
 
     async def list_tools(self, context: object) -> list[object]:
         del context
         return []
 
     async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolExecutionResult:
-        del context
         self.invoked_tool_names.append(invocation.tool_name)
+        self.invocation_contexts.append(context)
         return self._results.pop(0)
+
+
+def _build_trigger_message() -> SimpleNamespace:
+    """构造一条带真实发送者的群聊触发消息。"""
+
+    return SimpleNamespace(
+        message_info=SimpleNamespace(
+            user_info=SimpleNamespace(user_id="3895418161", user_nickname="主人"),
+            group_info=SimpleNamespace(group_id="1053559570", group_name="测试群"),
+        )
+    )
 
 
 def _build_tool_engine(results: list[ToolExecutionResult]) -> tuple[MaisakaReasoningEngine, SimpleNamespace]:
@@ -92,6 +104,7 @@ async def test_successful_stop_request_finishes_after_full_tool_batch() -> None:
             ToolCall(call_id="call-3", func_name="following_tool"),
         ],
         "测试思考",
+        _build_trigger_message(),
     )
 
     assert should_pause is True
@@ -125,17 +138,24 @@ async def test_failed_stop_request_keeps_planner_running() -> None:
         ]
     )
 
+    trigger_message = _build_trigger_message()
+
     should_pause, pause_reason, _, _ = await engine._handle_tool_calls(
         [
             ToolCall(call_id="call-1", func_name="terminal_tool"),
             ToolCall(call_id="call-2", func_name="following_tool"),
         ],
         "测试思考",
+        trigger_message,
     )
 
     assert should_pause is False
     assert pause_reason == ""
     assert runtime._tool_registry.invoked_tool_names == ["terminal_tool", "following_tool"]
+    # 群聊会话本身没有 user_id，工具只能靠 anchor_message 拿到真实发送者
+    assert [
+        context.metadata["anchor_message"] for context in runtime._tool_registry.invocation_contexts
+    ] == [trigger_message, trigger_message]
     runtime._end_planner_continuation.assert_not_called()
     runtime._enter_stop_state.assert_not_called()
 
