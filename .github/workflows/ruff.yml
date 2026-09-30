@@ -1,23 +1,25 @@
 name: Ruff
 
 on:
-  # push:
-  #   branches:
-  #     - main
-  #     - dev
-  #     - dev-refactor # 例如：匹配所有以 feature/ 开头的分支
-  #     # 添加你希望触发此 workflow 的其他分支
+  # 原来这里被整段注释掉，而 job 却用 `if: github.event_name == 'push'` 做判断，
+  # 只剩 workflow_dispatch 触发时该条件恒为 false，job 被永久跳过 —— lint 实质停用。
+  # 这里恢复原本意图：push 到长期分支时自动执行 Ruff 修复 + 格式化并回提交。
+  # PR 上的硬性 lint 拦截由 ruff-pr.yml 负责（只读检查，不在 PR 上自动提交代码）。
+  push:
+    branches:
+      - main
+      - dev
+      - dev-refactor
   workflow_dispatch: # 允许手动触发工作流
+
 permissions:
   contents: write
 
 jobs:
   ruff:
     runs-on: ubuntu-24.04
-    # 关键修改：添加条件判断
-    # 确保只有在 event_name 是 'push' 且不是由 Pull Request 引起的 push 时才运行
-    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/pull/')
-
+    # 原先的 `if: github.event_name == 'push' && !startsWith(github.ref, 'refs/pull/')` 已删除：
+    # 触发条件本身就限定了 push（长期分支）与手动触发，再挂一个 event_name 判断只会重新制造矛盾。
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,12 +29,14 @@ jobs:
         uses: astral-sh/ruff-action@v3
         with:
           args: "--version"
-          version: "latest"
+          # 与 ruff-pr.yml 的格式检查（0.15.11）以及项目开发环境使用的 ruff 版本保持一致；
+          # 原来写 latest，会出现"自动修复用的 ruff"和"PR 校验用的 ruff"版本不同、格式互相打架且无法复现。
+          version: "0.15.11"
       - name: Run Ruff Fix
-        run: ruff check --fix --unsafe-fixes; if ($LASTEXITCODE -ne 0) { Write-Host "Ruff check completed with warnings" }
+        run: ruff check --fix --unsafe-fixes; if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Ruff check 仍有无法自动修复的问题（详见上方日志）；本 workflow 只负责自动修复，硬性拦截由 ruff-pr.yml 承担" }
         shell: pwsh
       - name: Run Ruff Format
-        run: ruff format; if ($LASTEXITCODE -ne 0) { Write-Host "Ruff format completed with warnings" }
+        run: ruff format; if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Ruff format 未成功执行（详见上方日志）；本 workflow 只负责自动修复，硬性拦截由 ruff-pr.yml 承担" }
         shell: pwsh
       - name: 提交更改
         if: success()
@@ -40,9 +44,15 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add -A
-          $changes = git diff --quiet; $staged = git diff --staged --quiet
-          if (-not ($changes -and $staged)) {
-            git commit -m "🤖 自动格式化代码 [skip ci]"
-            git push
+          # 原来写的是 `$changes = git diff --quiet; $staged = git diff --staged --quiet`：
+          # PowerShell 把原生命令的 stdout 赋给变量（--quiet 下恒为空），退出码根本没被判断，
+          # 于是没有任何改动时也会走到 git commit，因 "nothing to commit" 让 job 变红。
+          # 这里改为显式判断 `git diff --staged --quiet` 的退出码（0 = 无暂存改动）。
+          git diff --staged --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Ruff 未产生改动，跳过提交"
+            exit 0
           }
+          git commit -m "🤖 自动格式化代码 [skip ci]"
+          git push
         shell: pwsh

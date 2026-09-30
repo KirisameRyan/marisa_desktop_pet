@@ -106,12 +106,24 @@ MarisaBOT/
 
 ---
 
+## 📚 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [docs/external-deps.md](docs/external-deps.md) | 外部依赖与本地服务：GPT-SoVITS 语音（9880）、本地识图（9881）、NapCat（3001/6099）、云端 LLM 等；每条写清作用 / 默认端口路径 / 缺失表现 / 配置方法 |
+| [docs/plugin-api.md](docs/plugin-api.md) | 插件约定（`_manifest.json` 字段、`config.toml`、`plugin_type`）与四个第一方插件（`marisa_cv` / `marisa_desktop` / `marisa_gate` / `marisa_voice`）的指令、工具、网关与外部依赖 |
+| [docs/minimal-cross-platform-plan.md](docs/minimal-cross-platform-plan.md) | 平台身份（`is_bot_self`）历史实施方案；文首有现状对齐说明与「旧路径 → 现状」映射 |
+| [docs/a_memorix_sync.md](docs/a_memorix_sync.md) | A_memorix 记忆子系统同步说明 |
+| [docs/plugin_persistence.md](docs/plugin_persistence.md) | 插件持久化说明 |
+| [docs/CONTRIBUTE.md](docs/CONTRIBUTE.md) | 贡献指南 |
+
+---
+
 ## 🔮 未来升级方向 (Roadmap)
 
 1. **MaiBot WebUI 深度集成仪表盘**：
    - 在 MaiBot 现有管理页面新增桌面端状态面板，实时查看桌宠当前坐标、动画状态、网易云播放进度与音量。
-2. **GPT-SoVITS 本地音色克隆**：
-   - 接入魔理沙专属训练声音模型，替代云端 TTS，实现完全离线、低延迟、高表现力的魔理沙语音。
+2. ~~**GPT-SoVITS 本地音色克隆**~~ **（已落地）**：本地 GPT-SoVITS 语音服务已接入（`plugins/marisa_voice`，默认 `http://127.0.0.1:9880`），桌宠语音伴读与 QQ 语音条共用同一音色，详见 [docs/external-deps.md](docs/external-deps.md)。
 3. **视觉多模态智能体扩展**：
    - 增强主动巡检算法，识别主人当前专注应用，适时给出关心（如“主人代码写了很久啦，喝口水休息一下だぜ！”）。
 4. **动作编辑器与自定义装扮**：

@@ -14,6 +14,7 @@ maibot-dashboard==1.7.3
 maibot-plugin-sdk>=2.8.0
 mcp
 msgpack>=1.1.2
+mss>=10.2.0
 numpy>=2.2.6
 openai>=1.95.0
 pandas>=2.3.1
@@ -21,9 +22,13 @@ pillow>=11.3.0
 playwright>=1.54.0
 pyarrow>=20.0.0
 pydantic>=2.11.7
+pygame>=2.6.1
+pyncm @ git+https://github.com/Code-MonkeyZhang/pyncm.git@26fda90ba874b652885458b89b92045ff88a8eef
 pypinyin>=0.54.0
 prompt-toolkit>=3.0.52
+PyQt6>=6.11.0
 python-multipart>=0.0.20
+qrcode>=8.2
 rapidfuzz
 rich>=14.0.0
 scipy>=1.7.0

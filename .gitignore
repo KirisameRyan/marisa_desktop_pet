@@ -5,6 +5,8 @@ config.json
 
 # 三方与本地环境
 NapCat.Shell.Windows.Node/
+# 历史合并备份目录（数百 MB，不参与版本控制，避免反复出现在 git status 里）
+NapCat.Shell.Windows.Node.merged-backup-*/
 .zcode/
 
 # 本地备份文件
@@ -374,13 +376,28 @@ start_maibot.cmd
 src/plugins/test_plugin_pic/actions/pic_action_config.toml
 run_pet.bat
 
+# /plugins 默认整体忽略：第三方插件是各自的独立仓库（来源见 plugins/MANIFEST.md），不进主仓库。
+# 只有主仓库自己维护、且缺了就跑不起来的第一方插件才反白名单入库，保证一次 clone 就能恢复可运行状态。
 /plugins/*
 !/plugins
 !/plugins/hello_world_plugin
 !/plugins/emoji_manage_plugin
 !/plugins/__init__.py
+!/plugins/marisa_cv
+!/plugins/marisa_desktop
+!/plugins/marisa_gate
+!/plugins/marisa_voice
+# 插件来源与必需性登记表，必须随主仓库走
+!/plugins/MANIFEST.md
+
+# 插件配置重置时留下的备份目录（运行时状态，不入库）
+config_back/
 
 config.toml
+# 第一方插件的 config.toml 是插件契约的一部分（缺 [plugin].config_version 宿主会直接报错），
+# 且内容不含密钥，必须随主仓库走。注意：gitignore 是「最后匹配者胜」，
+# 这条反白名单必须排在上面的裸 config.toml 规则之后，否则会被它覆盖。
+!/plugins/marisa_cv/config.toml
 
 interested_rates.txt
 MaiBot.code-workspace

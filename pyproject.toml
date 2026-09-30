@@ -9,6 +9,7 @@ description = "MaiCore 是一个基于大语言模型的可交互智能体"
 requires-python = ">=3.12"
 dependencies = [
     "Babel>=2.17.0",
+    "ahocorasick-rs>=1.0.3",
     "aiohttp>=3.12.14",
     "certifi",
     "colorama>=0.4.6",
@@ -23,6 +24,7 @@ dependencies = [
     "maibot-plugin-sdk>=2.8.0",
     "mcp",
     "msgpack>=1.1.2",
+    "mss>=10.2.0",
     "numpy>=2.2.6",
     "openai>=1.95.0",
     "pandas>=2.3.1",
@@ -30,9 +32,13 @@ dependencies = [
     "playwright>=1.54.0",
     "pyarrow>=20.0.0",
     "pydantic>=2.11.7",
+    "pygame>=2.6.1",
+    "pyncm @ git+https://github.com/Code-MonkeyZhang/pyncm.git@26fda90ba874b652885458b89b92045ff88a8eef",
     "pypinyin>=0.54.0",
     "prompt-toolkit>=3.0.52",
+    "PyQt6>=6.11.0",
     "python-multipart>=0.0.20",
+    "qrcode>=8.2",
     "rapidfuzz",
     "rich>=14.0.0",
     "scipy>=1.7.0",
@@ -43,7 +49,6 @@ dependencies = [
     "typing-extensions",
     "uvicorn>=0.35.0",
     "watchfiles>=1.1.1",
-    "ahocorasick-rs>=1.0.3",
 ]
 
 [dependency-groups]

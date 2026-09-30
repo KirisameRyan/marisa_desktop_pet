@@ -1,0 +1,20 @@
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+# 识图完全在本地跑：WD-ConvNeXt v3 特征 + 134 位东方角色逻辑回归头。
+# 只回答「图里有谁」，不给坐标；识别不到已知角色时会明说没认出来。
+[cv]
+enabled = true
+threshold = 0.2            # 置信度阈值，低于该值不展示（数据集推荐 0.2）
+top_k = 3                  # 一次最多展示几个角色
+cooldown_sec = 30.0        # 同一人两次 /识图 的最小间隔（秒），0=不限制
+pending_ttl_sec = 120.0    # /识图 之后等待图片的秒数，超时取消待图
+
+[service]
+api_url = "http://127.0.0.1:9881"
+request_timeout_sec = 30.0
+auto_start_api = true
+api_start_script = ""      # 留空使用插件内置 service/start_cls_api.bat
+api_start_timeout_sec = 120.0
+prewarm = true             # 宿主启动时预热识图服务（失败写 data/anime_cv.log）

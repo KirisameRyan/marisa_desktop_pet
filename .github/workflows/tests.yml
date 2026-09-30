@@ -1,0 +1,71 @@
+# 全量测试流水线：push / pull_request 上跑仓库的两个真实测试根 pytests 与 tests
+# （pyproject.toml 的 [tool.pytest.ini_options] 只设了 pythonpath、没有 testpaths，所以必须显式指定目录）。
+# 新增原因：仓库里唯一跑 pytest 的 a-memorix-tests.yml 只覆盖 pytests/A_memorix_test 加个别文件，
+# 其余 1500+ 用例在 CI 上从来不被执行，回归挡不住。
+#
+# 本地实测（收集阶段 `pytest --collect-only -q`，Python 3.13.3 / pytest 9.0.3）：
+#   1) `pytest --collect-only -q pytests`            -> 1485 tests collected，无错误
+#   2) `pytest --collect-only -q tests`              ->   46 tests collected，无错误
+#   3) `pytest --collect-only -q pytests tests`      -> 收集中断，1 error：
+#        ERROR collecting tests/platform_io/test_adapter_policy.py
+#        import file mismatch: imported module 'test_adapter_policy' has this __file__ attribute:
+#          D:\MarisaBOT\pytests\platform_io\test_adapter_policy.py
+#        which is not the same as the test file we want to collect:
+#          D:\MarisaBOT\tests\platform_io\test_adapter_policy.py
+#      原因：pytests/platform_io/test_adapter_policy.py 与 tests/platform_io/test_adapter_policy.py 同名，
+#      两个测试根全仓库 0 个 conftest.py、tests/ 下 0 个 __init__.py，在 pytest 默认的 prepend import
+#      模式下同名模块会互相冲突。加 --import-mode=importlib 可以一次收集 1531 个用例（= 1485 + 46），
+#      但 importlib 会改变所有用例的 import 语义、本地又无法跑用例验证，故不采用。
+#      结论：拆成两个独立 step（两个独立进程），不改变任何 import 语义，且 1485 + 46 = 1531 与
+#      单进程 importlib 收集数一致，说明两个根都被完整覆盖。
+#      根因修复（给测试根补 conftest.py/__init__.py 或重命名同名文件）属于 tests/ 所有者的范围，
+#      本 workflow 只允许写 .github/workflows/，不越权掩盖该缺陷，因此在此如实记录。
+#   4) 未做任何 --deselect：本地只运行了收集阶段、没有运行用例，无法确认真实需要联网/桌面的用例；
+#      已检索确认这两个根内没有任何 network/integration/slow/desktop/e2e 标记，也没有 playwright/mss/
+#      裸 socket 调用；按仓库规范（错误要完整暴露、不用 fallback 掩盖），不做盲目 deselect。
+#      若后续确认某用例必须联网，应单独注明原因再加 --deselect，而不是整文件跳过。
+#   5) 本流水线不跑 plugins/*/tests：插件自带测试不属于这里声明的两个测试根。
+#
+# 安全：权限只有 contents: read，不上传任何 artifact，不打印/上传 .env、config.toml 等敏感文件。
+
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # 安装方式选 uv：AGENTS.md 要求"优先使用 uv"，仓库现有 a-memorix-tests.yml 也用 setup-uv + uv sync。
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          # 通过 UV_PYTHON 固定解释器为 3.13（uv 会自动下载对应版本），
+          # 不用默认的系统 Python 3.12，与开发环境 .venv 的 3.13.3 对齐。
+          python-version: "3.13"
+      # 故意不加 --frozen：本地实测 `uv lock --check` 当前直接失败
+      # （"The lockfile at `uv.lock` needs to be updated"），因为 pyproject.toml 的依赖声明仍在同步修改；
+      # 锁文件落后时 --frozen 会让流水线卡在"装依赖"这一步，反而掩盖真正的测试结果。
+      # 等依赖声明定稿并提交 uv lock 之后，可收紧为 `uv sync --frozen --group dev` 以保证可复现。
+      - name: 安装项目依赖
+        run: uv sync --group dev
+      - name: 校验解释器版本为 Python 3.13
+        run: 'uv run python -c "import sys; print(sys.version); assert sys.version_info[:2] == (3, 13), sys.version"'
+      - name: 运行 pytests 测试根
+        run: uv run pytest -q pytests
+      # !cancelled() 而不是默认的成功才执行：前一个测试根失败时仍要跑完 tests 根，
+      # 这样一次 CI 能拿到两个根的真实结果；job 依旧保持失败状态，不掩盖任何错误。
+      - name: 运行 tests 测试根
+        if: ${{ !cancelled() }}
+        run: uv run pytest -q tests

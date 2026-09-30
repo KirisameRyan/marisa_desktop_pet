@@ -1,5 +1,47 @@
 # Minimal Cross-Platform Runtime Plan
 
+> **状态说明（现状对齐，2026-09-30）**
+>
+> 本文是为**上游 MaiBot 目录结构**编写的实施方案（联合评审时间 2026-03-15）。它引用的部分路径在本仓库（MarisaBOT）已经不存在。本文**作为历史决策记录原文保留**，结论、权衡与原子性约束一律不删改；下面只做「现状对齐」。
+>
+> **图例**
+> - `⚠`：该路径（或它所在的整个目录）在本仓库**已不存在**；对应现状见下方「旧路径 → 现状映射」。
+> - `↻`：文件仍存在，但位置已变（同样见映射表）。
+> - 本文所有行号均按上游提交时点记录。本仓库行号已普遍漂移，**请按函数名/符号检索，不要按行号定位**。
+>
+> **哪些结论仍然适用（已实读核实）**
+> - 核心目标已落地，但实现形态与本文不同：`is_bot_self(platform, user_id)` 现在只有一条真实实现路径 —— `src/chat/utils/utils.py:104`，其账号事实来自 `src/services/bot_account_service.py:139`；`src/common/utils/system_utils.py:3` 只是薄包装。参数顺序陷阱已消除：全仓 `is_bot_self(` 调用点均为 `(platform, user_id)`。
+> - 「未知平台不再回落 QQ」已实现：`src/chat/utils/utils.py:129-132` 对未配置平台返回 `False` 并只告警一次。
+> - `filter_bot` 已按 `(platform, user_id)` 成对匹配实现：`src/common/message_repository.py:164-180`，数据源为 `get_all_bot_account_pairs()`。
+> - 发送身份不再硬编码 `qq_account`：`src/services/send_service.py:278`、`:541` 使用 `get_bot_account(target_stream.platform, target_stream.account_id)`。
+> - 统计侧已改用 `is_bot_self`：`src/chat/utils/statistic.py:2905`。
+> - 空 `platform` 仍被写入路径拒绝：`src/chat/message_receive/chat_manager.py:178-180` 抛 `ValueError("消息缺少平台信息")`。
+> - 数据库表名 `mai_messages` 未变：`src/common/database/database_model.py:25`。本文 Phase Gate 里的 SQL 仍需按现状平台分布复核。
+>
+> **哪些结论已被后续方案取代**
+> - 本文设计的 `get_bot_account(platform)` / `get_all_bot_accounts()` 已被取代：现在的 `get_bot_account(platform, preferred_account_id=None)` 位于 `src/chat/utils/utils.py:70`，底层是 `src/services/bot_account_service.py` 维护的**数据库身份事实**（适配器上报 + 可软禁用），配套接口为 `get_all_bot_account_pairs()`。`get_all_bot_accounts()` 与 `get_current_platform_account` 在本仓库均已不存在。
+> - 本文明确禁止的「新增 WebUI bot 身份常量」已被后续方案推翻并落地：`src/services/bot_account_service.py:19` 定义 `WEBUI_BOT_USER_ID = "self"`，同文件 `:109-110` 让 `webui` 平台直接返回该身份，WebUI 不再以 `qq_account` 作为 bot id。
+> - 本地可信入口有独立 bot 身份：`src/core/local_operator.py:14-17` 的 `LOCAL_PLATFORM_BOT_IDS`（`bot_console`、`maisaka_cli`）。
+> - 本文的 PFC 相关条目（PFC 序列化缺口、PFC 内部身份判定、PFC 提示词平台化）在现状下**已无对应代码**：`src/chat/brain_chat/` 整个目录在本仓库不存在（已核实），全仓无 `brain_chat` / `planner_actions` / `memory_system` 字符串。回复与回合调度改由 `src/maisaka/` 承担，记忆子系统改由 `src/A_memorix/`（含独立 `MODIFICATION_POLICY.md`）承担。它们与本文的 PFC 迁移计划**不是同一套实现**，不能按本文的 phase allowlist 直接施工。
+>
+> **旧路径 → 现状映射（逐条已用 Test-Path / 读文件核实）**
+>
+> | 本文引用的旧路径 | 现状 |
+> |---|---|
+> | `src/webui/routers/chat/support.py` | **已不存在**。`src/webui/routers/chat/` 现为 `routes.py` / `serializers.py` / `service.py` / `__init__.py`。WebUI 历史消息的 bot 判定在 `src/webui/routers/chat/service.py:98`；`WEBUI_CHAT_PLATFORM` / `VIRTUAL_GROUP_ID_PREFIX` / `WEBUI_USER_ID_PREFIX` 定义在同文件 `:28-30`，`ChatHistoryManager` 在同文件 `:74`。 |
+> | `src/chat/replyer/private_generator.py`、`src/chat/replyer/group_generator.py` | **已不存在**。`src/chat/replyer/` 现为 `expression_vector_index.py` / `maisaka_expression_selector.py` / `maisaka_generator.py` / `maisaka_generator_base.py` / `replyer_manager.py`。发送身份构造改在 `src/services/send_service.py:278`、`:541`。 |
+> | `src/chat/planner_actions/planner.py` | **已不存在**（`src/chat/planner_actions/` 整个目录已不存在）。回合调度与门控现由 `src/maisaka/turn_scheduler.py`、`turn_gates.py`、`reply_necessity.py`、`mode_policy.py`、`runtime.py` 等承担（目录实读）。 |
+> | `src/memory_system/chat_history_summarizer.py` | **已不存在**（`src/memory_system/` 整个目录已不存在）。记忆子系统现为 `src/A_memorix/`；另有 `src/maisaka/memory/`（`heuristic_injector.py` / `mid_term.py` / `person_profile.py`）与 `src/services/memory_flow_service.py`。 |
+> | `src/chat/brain_chat/PFC/*`（`message_sender.py`、`chat_observer.py`、`reply_checker.py`、`action_planner.py`、`reply_generator.py`、`pfc.py`、`chat_states.py`、`observation_info.py`、`conversation.py`） | **整个 PFC 目录已不存在**（`src/chat/brain_chat/` 的 Test-Path 为 `False`；全仓搜索无 `brain_chat` 字符串）。 |
+> | `pytests/utils_test/message_utils_test.py` | **已不存在**（`pytests/utils_test/` 目录已不存在）。对应的 bot 身份测试现为 `pytests/test_chat_utils_bot_identity.py` 与 `pytests/test_bot_account_service.py`。 |
+> | `emoji_plugin/plugin.py` | **该模块在本仓库已不存在（已核实）**：根目录无 `emoji_plugin/`，`plugins/` 下也无对应插件。 |
+> | `chat_manager.py:128-131` | ↻ `src/chat/message_receive/chat_manager.py:178-180`（空 platform 仍抛 `ValueError`）。 |
+> | `bot.py:316-317` | ↻ 根目录 `bot.py` 是主入口；本文所指的 `SessionUtils.calculate_session_id(message.platform, ...)` 现位于 `src/chat/message_receive/bot.py:733`。 |
+>
+> **路径未变、仅行号漂移的文件**：`src/common/utils/system_utils.py`、`src/chat/utils/utils.py`、`src/chat/utils/statistic.py`、`src/person_info/person_info.py`、`src/learners/expression_learner.py`、`src/common/utils/utils_message.py`、`src/common/message_repository.py`、`src/services/send_service.py`。
+
+---
+
 ## Goal
 
 Make MaiBot runtime identity handling platform-aware with the smallest safe change set.
@@ -18,9 +60,9 @@ This pass does **not** try to clean every QQ-oriented string, thread platform th
 
 The following are explicitly deferred because they are not required for runtime correctness in this pass:
 
-- **PFC platform propagation.** `ChatObserver._message_to_dict` currently omits platform from the serialized `user_info` dict; `observation_info.dict_to_session_message` reads `user_info_dict.get("platform", "")` which is always `""`. Fixing this cascades into `chat_observer.py`, `chat_states.py`, `observation_info.py`, and possibly `conversation.py`. Deferred to a follow-up plan.
-- **PFC-internal identity checks.** Sites like `reply_checker.py:61`, `action_planner.py:157`, and `chat_observer.py:337` (inside `process_chat_history`, which has **no in-repo call sites**) operate on PFC serialized dicts where platform is always `""`. They cannot be migrated to `is_bot_self(platform, user_id)` until PFC serialization is fixed. Deferred.
-- **PFC prompt platformization.** Replacing `QQ私聊`/`QQ聊天` in `action_planner.py`, `reply_generator.py`, `pfc.py`, and `emoji_plugin` requires threading platform through PFC prompt construction context. Deferred.
+- **PFC platform propagation.** `ChatObserver._message_to_dict` currently omits platform from the serialized `user_info` dict; `observation_info.dict_to_session_message` reads `user_info_dict.get("platform", "")` which is always `""`. Fixing this cascades into `chat_observer.py` ⚠, `chat_states.py` ⚠, `observation_info.py` ⚠, and possibly `conversation.py` ⚠. Deferred to a follow-up plan.
+- **PFC-internal identity checks.** Sites like `reply_checker.py:61` ⚠, `action_planner.py:157` ⚠, and `chat_observer.py:337` ⚠ (inside `process_chat_history`, which has **no in-repo call sites**) operate on PFC serialized dicts where platform is always `""`. They cannot be migrated to `is_bot_self(platform, user_id)` until PFC serialization is fixed. Deferred.
+- **PFC prompt platformization.** Replacing `QQ私聊`/`QQ聊天` in `action_planner.py` ⚠, `reply_generator.py` ⚠, `pfc.py` ⚠, and `emoji_plugin` requires threading platform through PFC prompt construction context. Deferred.
 - MCP permission ID format changes (`qq:...` -> `{platform}:...`).
 - Capability API default changes (`args.get("platform", "qq")` -> `"all_platforms"`).
 - Dashboard/UI/config label cleanup.
@@ -43,13 +85,13 @@ This plan is based on the checked-in code, not on assumptions from previous draf
 Wrong-order call sites (8 total):
 - `src/learners/expression_learner.py` x3 (lines 158, 241, 301)
 - `src/common/utils/utils_message.py` x4 (lines 370, 440, 476, 515)
-- `src/webui/routers/chat/support.py` x1 (line 65)
+- `src/webui/routers/chat/support.py` ⚠ x1 (line 65)
 
 Correct-order callers (verify only, do not modify):
-- `src/chat/replyer/private_generator.py` (lines 680, 816)
-- `src/chat/replyer/group_generator.py` (line 831)
-- `src/chat/planner_actions/planner.py` (line 245)
-- `src/memory_system/chat_history_summarizer.py` (line 368)
+- `src/chat/replyer/private_generator.py` ⚠ (lines 680, 816)
+- `src/chat/replyer/group_generator.py` ⚠ (line 831)
+- `src/chat/planner_actions/planner.py` ⚠ (line 245)
+- `src/memory_system/chat_history_summarizer.py` ⚠ (line 368)
 
 ### PFC Serialization Gap (Known, Not Fixed Here)
 
@@ -74,7 +116,7 @@ platform = user_info_dict.get("platform", "")  # always "" due to above gap
 
 - Local WebUI bot messages are stored with `platform="webui"` and `user_id=str(global_config.bot.qq_account)`.
 - `is_bot_self` already treats `platform == "webui"` as comparing against `qq_account`.
-- `support.py` contains additional heuristic fallbacks built around this sender shape.
+- `support.py` ⚠ contains additional heuristic fallbacks built around this sender shape.
 
 This plan preserves this behavior. Introducing a new WebUI bot ID would require transition logic in both Python and SQL and is deferred.
 
@@ -82,9 +124,9 @@ This plan preserves this behavior. Introducing a new WebUI bot ID would require 
 
 Outbound bot sender IDs are hard-coded to `global_config.bot.qq_account` in:
 - `src/services/send_service.py:91` (has `target_stream.platform`)
-- `src/chat/replyer/group_generator.py:1125` (has `self.chat_stream.platform`)
-- `src/chat/replyer/private_generator.py:965` (has `self.chat_stream.platform`)
-- `src/chat/brain_chat/PFC/message_sender.py:44` (has chat stream context)
+- `src/chat/replyer/group_generator.py:1125` ⚠ (has `self.chat_stream.platform`)
+- `src/chat/replyer/private_generator.py:965` ⚠ (has `self.chat_stream.platform`)
+- `src/chat/brain_chat/PFC/message_sender.py:44` ⚠ (has chat stream context)
 
 All have platform available at runtime.
 
@@ -124,7 +166,7 @@ Make `src/chat/utils/utils.py::is_bot_self(platform, user_id)` the only real imp
 - `src/person_info/person_info.py`
 - `src/learners/expression_learner.py`
 - `src/common/utils/utils_message.py`
-- `src/webui/routers/chat/support.py`
+- `src/webui/routers/chat/support.py` ⚠
 - tests
 
 ### Required Changes
@@ -143,11 +185,11 @@ Make `src/chat/utils/utils.py::is_bot_self(platform, user_id)` the only real imp
    | `utils_message.py` | 440 | `is_bot_self(user_id, platform)` | swap |
    | `utils_message.py` | 476 | `is_bot_self(user_id, platform)` | swap |
    | `utils_message.py` | 515 | `is_bot_self(user_id, platform)` | swap |
-   | `support.py` | 65 | `is_bot_self(user_id, msg.platform)` | swap + change import source to `src.chat.utils.utils` |
+   | `support.py` ⚠ | 65 | `is_bot_self(user_id, msg.platform)` | swap + change import source to `src.chat.utils.utils` |
 
 3. Replace `Person._is_bot_self` body with delegation to the canonical function. Use a **method-local import** inside `person_info.py` to avoid a new import cycle.
 4. Do not change identity semantics yet (QQ fallback deletion is Phase 1).
-5. Update existing test mocks: `pytests/utils_test/message_utils_test.py:203` defines `dummy_is_bot_self(user_id, platform)` with the **old** argument order. After swapping call sites, this mock must be updated to `dummy_is_bot_self(platform, user_id)` and the injection at line 235 must match.
+5. Update existing test mocks: `pytests/utils_test/message_utils_test.py:203` ⚠ defines `dummy_is_bot_self(user_id, platform)` with the **old** argument order. After swapping call sites, this mock must be updated to `dummy_is_bot_self(platform, user_id)` and the injection at line 235 must match.
 
 ### Acceptance Criteria
 
@@ -173,14 +215,14 @@ Create one canonical place to resolve bot accounts for any runtime platform, del
 ### Allowed Files
 
 - `src/chat/utils/utils.py`
-- `src/chat/planner_actions/planner.py`
+- `src/chat/planner_actions/planner.py` ⚠
 - `src/chat/utils/statistic.py`
 - `src/common/message_repository.py`
-- `src/webui/routers/chat/support.py`
+- `src/webui/routers/chat/support.py` ⚠
 - `src/services/send_service.py`
-- `src/chat/replyer/group_generator.py`
-- `src/chat/replyer/private_generator.py`
-- `src/chat/brain_chat/PFC/message_sender.py`
+- `src/chat/replyer/group_generator.py` ⚠
+- `src/chat/replyer/private_generator.py` ⚠
+- `src/chat/brain_chat/PFC/message_sender.py` ⚠
 - `src/person_info/person_info.py`
 - tests
 
@@ -213,19 +255,19 @@ Update `is_bot_self` to follow the Identity Matrix. Key change:
 |------|------|-------------|--------|
 | `utils.py` | 88 | inside `is_bot_self` | **KEEP** — internal to canonical function |
 | `utils.py` | 124 | inside `is_mentioned_bot_in_message` | **UPDATE** — use `get_bot_account(platform)` |
-| `planner.py` | 125 | `platform = message.platform or "qq"` | **UPDATE** — see below |
-| `planner.py` | 138 | `if user_id == global_config.bot.qq_account:` | **REPLACE** with `is_bot_self(platform, str(user_id))` |
+| `planner.py` ⚠ | 125 | `platform = message.platform or "qq"` | **UPDATE** — see below |
+| `planner.py` ⚠ | 138 | `if user_id == global_config.bot.qq_account:` | **REPLACE** with `is_bot_self(platform, str(user_id))` |
 | `statistic.py` | 2111 | `str(global_config.bot.qq_account)` | **REPLACE** — see below |
 | `message_repository.py` | 166 | `Messages.user_id != global_config.bot.qq_account` | **UPDATE** — see below |
-| `support.py` | 68 | `user_id == str(global_config.bot.qq_account)` | **REPLACE** with `is_bot_self(msg.platform, user_id)` |
+| `support.py` ⚠ | 68 | `user_id == str(global_config.bot.qq_account)` | **REPLACE** with `is_bot_self(msg.platform, user_id)` |
 
 ### Excluded from This Phase (PFC-Internal, Platform Unavailable)
 
 | File | Line | Current Code | Why excluded |
 |------|------|-------------|-------------|
-| `chat_observer.py` | 337 | `user_info.user_id == global_config.bot.qq_account` | `process_chat_history` has no call sites; PFC dict lacks platform |
-| `reply_checker.py` | 61 | `str(user_info.user_id) == str(global_config.bot.qq_account)` | Operates on PFC dicts without platform |
-| `action_planner.py` | 157 | `bot_id = str(global_config.bot.qq_account)` | PFC-internal; platform not propagated |
+| `chat_observer.py` ⚠ | 337 | `user_info.user_id == global_config.bot.qq_account` | `process_chat_history` has no call sites; PFC dict lacks platform |
+| `reply_checker.py` ⚠ | 61 | `str(user_info.user_id) == str(global_config.bot.qq_account)` | Operates on PFC dicts without platform |
+| `action_planner.py` ⚠ | 157 | `bot_id = str(global_config.bot.qq_account)` | PFC-internal; platform not propagated |
 
 ### Sender Construction Sites (Now Part of This Phase)
 
@@ -234,13 +276,13 @@ Update `is_bot_self` to follow the Identity Matrix. Key change:
 | File | Line | Current Code | Action |
 |------|------|-------------|--------|
 | `send_service.py` | 91 | `user_id=str(global_config.bot.qq_account)` | **REPLACE** with `get_bot_account(target_stream.platform)` |
-| `group_generator.py` | 1125 | `user_id=str(global_config.bot.qq_account)` | **REPLACE** with `get_bot_account(self.chat_stream.platform)` |
-| `private_generator.py` | 965 | `user_id=str(global_config.bot.qq_account)` | **REPLACE** with `get_bot_account(self.chat_stream.platform)` |
-| `message_sender.py` | 44 | `user_id=global_config.bot.qq_account` | **REPLACE** with `get_bot_account(platform)` from chat stream context |
+| `group_generator.py` ⚠ | 1125 | `user_id=str(global_config.bot.qq_account)` | **REPLACE** with `get_bot_account(self.chat_stream.platform)` |
+| `private_generator.py` ⚠ | 965 | `user_id=str(global_config.bot.qq_account)` | **REPLACE** with `get_bot_account(self.chat_stream.platform)` |
+| `message_sender.py` ⚠ | 44 | `user_id=global_config.bot.qq_account` | **REPLACE** with `get_bot_account(platform)` from chat stream context |
 
 ### Detailed Instructions
 
-#### `planner.py:125` — Empty Platform Handling
+#### `planner.py:125` ⚠ — Empty Platform Handling
 
 ```python
 # BEFORE:
@@ -280,7 +322,7 @@ if is_bot_self(message.platform or "", message.user_id or ""):
 
 Place the import locally to avoid circular import risk. `Messages` records have a `.platform` field so this handles all platforms.
 
-#### `support.py:62-70` — WebUI Bot Detection
+#### `support.py:62-70` ⚠ — WebUI Bot Detection
 
 ```python
 # CURRENT (after Phase 0 arg-order fix):
@@ -341,7 +383,7 @@ if filter_bot:
 - `is_bot_self("webui", str(qq_account))` returns `True` (preserves current behavior).
 - `filter_bot=True` excludes configured bot identities by `(platform, user_id)` pairs.
 - `statistic.py` uses `is_bot_self` for reply counting.
-- `support.py` uses `is_bot_self` without reverse heuristic fallbacks.
+- `support.py` ⚠ uses `is_bot_self` without reverse heuristic fallbacks.
 - PFC-internal sites are **not changed**.
 
 ### Sender Construction Changes (formerly Phase 2)
@@ -351,9 +393,9 @@ Replace hard-coded `global_config.bot.qq_account` sender IDs with `get_bot_accou
 | File | Line | Platform Source |
 |------|------|----------------|
 | `send_service.py` | 91 | `target_stream.platform` |
-| `group_generator.py` | 1125 | `self.chat_stream.platform` |
-| `private_generator.py` | 965 | `self.chat_stream.platform` |
-| `message_sender.py` | 44 | available from chat stream context |
+| `group_generator.py` ⚠ | 1125 | `self.chat_stream.platform` |
+| `private_generator.py` ⚠ | 965 | `self.chat_stream.platform` |
+| `message_sender.py` ⚠ | 44 | available from chat stream context |
 
 For this pass:
 - Local WebUI resolves to `str(qq_account)` via `get_bot_account("webui")` — same value as today, no regression.
@@ -375,16 +417,16 @@ These sites use QQ-specific wording but need only text replacement, no runtime p
 
 | File | Line(s) | Text | Why deferred |
 |------|---------|------|-------------|
-| `action_planner.py` | 22, 55, 89 | `QQ私聊` / `QQ 私聊` | Needs platform in PFC prompt context |
-| `reply_generator.py` | 18, 43, 68 | `QQ私聊` | Same |
-| `pfc.py` | 125, 254 | `QQ聊天` | Same |
-| `emoji_plugin/plugin.py` | 66 | `你正在进行QQ聊天` | Needs plugin message context |
+| `action_planner.py` ⚠ | 22, 55, 89 | `QQ私聊` / `QQ 私聊` | Needs platform in PFC prompt context |
+| `reply_generator.py` ⚠ | 18, 43, 68 | `QQ私聊` | Same |
+| `pfc.py` ⚠ | 125, 254 | `QQ聊天` | Same |
+| `emoji_plugin/plugin.py` ⚠ | 66 | `你正在进行QQ聊天` | Needs plugin message context |
 
 ### Known Behavior Changes
 
 | Site | Current Behavior | New Behavior | Risk |
 |------|-----------------|--------------|------|
-| `planner.py:138` | `user_id == global_config.bot.qq_account` compares string to int — always `False` (existing bug) | `is_bot_self(platform, str(user_id))` — correctly identifies bot | **Fixes existing bug**, but changes behavior. May cause bot name to render as `{nickname}(你)` where it previously showed the raw user reference. |
+| `planner.py:138` ⚠ | `user_id == global_config.bot.qq_account` compares string to int — always `False` (existing bug) | `is_bot_self(platform, str(user_id))` — correctly identifies bot | **Fixes existing bug**, but changes behavior. May cause bot name to render as `{nickname}(你)` where it previously showed the raw user reference. |
 
 ### Acceptance Criteria
 
@@ -395,7 +437,7 @@ These sites use QQ-specific wording but need only text replacement, no runtime p
 - `is_bot_self("webui", str(qq_account))` returns `True` (preserves current behavior).
 - `filter_bot=True` excludes configured bot identities by `(platform, user_id)` pairs.
 - `statistic.py` uses `is_bot_self` for reply counting.
-- `support.py` uses `is_bot_self` without reverse heuristic fallbacks.
+- `support.py` ⚠ uses `is_bot_self` without reverse heuristic fallbacks.
 - PFC-internal sites are **not changed**.
 - Outbound QQ sender IDs still use `qq_account`.
 - Outbound Telegram and other configured platform sender IDs use that platform's configured account.
@@ -439,7 +481,7 @@ This section is written for code-generation agents. If any rule here conflicts w
 
 - Do not edit files outside the current phase allowlist.
 - Do not bundle Phase 0 and Phase 1 into one commit.
-- Do not touch PFC serialization files (`chat_observer.py._message_to_dict`, `chat_states.py`, `observation_info.py`, `conversation.py`).
+- Do not touch PFC serialization files (`chat_observer.py._message_to_dict`, `chat_states.py` ⚠, `observation_info.py` ⚠, `conversation.py` ⚠).
 - Do not introduce `WEBUI_BOT_USER_ID` or any new WebUI bot identity constant.
 - Do not change capability query API defaults (`args.get("platform", "qq")`).
 - Do not change MCP permission context ID format.
@@ -468,14 +510,14 @@ When stopping, name: the exact file(s), the blocking mismatch, why it is outside
 
 | Phase | Allowed files |
 |-------|---------------|
-| Phase 0 | `src/common/utils/system_utils.py`, `src/chat/utils/utils.py`, `src/person_info/person_info.py`, `src/learners/expression_learner.py`, `src/common/utils/utils_message.py`, `src/webui/routers/chat/support.py`, tests (including `pytests/utils_test/message_utils_test.py`) |
-| Phase 1 | `src/chat/utils/utils.py`, `src/chat/planner_actions/planner.py`, `src/chat/utils/statistic.py`, `src/common/message_repository.py`, `src/webui/routers/chat/support.py`, `src/services/send_service.py`, `src/chat/replyer/group_generator.py`, `src/chat/replyer/private_generator.py`, `src/chat/brain_chat/PFC/message_sender.py`, `src/person_info/person_info.py`, tests |
+| Phase 0 | `src/common/utils/system_utils.py`, `src/chat/utils/utils.py`, `src/person_info/person_info.py`, `src/learners/expression_learner.py`, `src/common/utils/utils_message.py`, `src/webui/routers/chat/support.py` ⚠, tests (including `pytests/utils_test/message_utils_test.py` ⚠) |
+| Phase 1 | `src/chat/utils/utils.py`, `src/chat/planner_actions/planner.py` ⚠, `src/chat/utils/statistic.py`, `src/common/message_repository.py`, `src/webui/routers/chat/support.py` ⚠, `src/services/send_service.py`, `src/chat/replyer/group_generator.py` ⚠, `src/chat/replyer/private_generator.py` ⚠, `src/chat/brain_chat/PFC/message_sender.py` ⚠, `src/person_info/person_info.py`, tests |
 
 ### INVALID OUTPUT EXAMPLES
 
 Any of the following means the implementation has drifted and must be rejected:
 
-- Editing PFC serialization files (`chat_observer.py._message_to_dict`, `observation_info.py`, `chat_states.py`)
+- Editing PFC serialization files (`chat_observer.py._message_to_dict`, `observation_info.py` ⚠, `chat_states.py` ⚠)
 - Introducing `WEBUI_BOT_USER_ID` constant
 - Changing WebUI sender storage to anything other than `str(qq_account)`
 - `get_current_platform_account` still existing after Phase 1
@@ -506,11 +548,11 @@ rg -n 'qq昵称|qq群昵称|qq头像' src
 | Pattern | File | Why it remains |
 |---------|------|---------------|
 | `global_config.bot.qq_account` | `src/chat/utils/utils.py` | Internal to `is_bot_self` and `get_bot_account` |
-| `global_config.bot.qq_account` | `src/chat/brain_chat/PFC/chat_observer.py` | PFC-internal, `process_chat_history` has no call sites — deferred |
-| `global_config.bot.qq_account` | `src/chat/brain_chat/PFC/reply_checker.py` | PFC-internal, platform not available — deferred |
-| `global_config.bot.qq_account` | `src/chat/brain_chat/PFC/action_planner.py` | PFC-internal, platform not available — deferred |
+| `global_config.bot.qq_account` | `src/chat/brain_chat/PFC/chat_observer.py` ⚠ | PFC-internal, `process_chat_history` has no call sites — deferred |
+| `global_config.bot.qq_account` | `src/chat/brain_chat/PFC/reply_checker.py` ⚠ | PFC-internal, platform not available — deferred |
+| `global_config.bot.qq_account` | `src/chat/brain_chat/PFC/action_planner.py` ⚠ | PFC-internal, platform not available — deferred |
 | `QQ私聊` / `QQ聊天` | PFC prompt files | Requires platform threading into PFC context — deferred |
-| `进行QQ聊天` | `emoji_plugin/plugin.py` | Requires plugin context investigation — deferred |
+| `进行QQ聊天` | `emoji_plugin/plugin.py` ⚠ | Requires plugin context investigation — deferred |
 | `platform or "qq"` | capability query APIs | Default semantics change — deferred |
 
 ---
@@ -521,11 +563,11 @@ rg -n 'qq昵称|qq群昵称|qq头像' src
 
 ### 1. WebUI Virtual-Group Session ID Mismatch (Pre-existing Bug)
 
-`ChatHistoryManager._resolve_session_id()` at `support.py:84` always hashes with `WEBUI_CHAT_PLATFORM` ("webui"), but virtual-identity messages are created with the simulated platform (e.g., "telegram") at `support.py:341` and stored under `SessionUtils.calculate_session_id(message.platform, ...)` at `bot.py:316-317`. These produce different session IDs. This means history retrieval for virtual-group sessions may not find the stored messages. **This is a pre-existing bug, not introduced by this plan.** The plan's `support.py` heuristic deletion should include a smoke test of virtual-group mode to confirm behavior.
+`ChatHistoryManager._resolve_session_id()` at `support.py:84` ⚠ always hashes with `WEBUI_CHAT_PLATFORM` ("webui"), but virtual-identity messages are created with the simulated platform (e.g., "telegram") at `support.py:341` ⚠ and stored under `SessionUtils.calculate_session_id(message.platform, ...)` at `bot.py:316-317` ↻. These produce different session IDs. This means history retrieval for virtual-group sessions may not find the stored messages. **This is a pre-existing bug, not introduced by this plan.** The plan's `support.py` ⚠ heuristic deletion should include a smoke test of virtual-group mode to confirm behavior.
 
 ### 2. `filter_bot` Legacy Data Contingency
 
-The new `(platform, user_id)` pair matching in `filter_bot` will not catch historical rows where `platform` is empty or inconsistent. Current write paths reject empty platform at `chat_manager.py:128-131` before storage, so this is unlikely for recent data. However, if the database contains legacy rows from earlier versions with empty `platform`, those bot messages will no longer be filtered. **Recommendation:** Before deploying, run `SELECT DISTINCT platform FROM mai_messages WHERE user_id = '{qq_account}'` to verify data distribution. If empty-platform rows exist, consider a one-time data migration or add `("", str(qq_account))` to `get_all_bot_accounts()`.
+The new `(platform, user_id)` pair matching in `filter_bot` will not catch historical rows where `platform` is empty or inconsistent. Current write paths reject empty platform at `chat_manager.py:128-131` ↻ before storage, so this is unlikely for recent data. However, if the database contains legacy rows from earlier versions with empty `platform`, those bot messages will no longer be filtered. **Recommendation:** Before deploying, run `SELECT DISTINCT platform FROM mai_messages WHERE user_id = '{qq_account}'` to verify data distribution. If empty-platform rows exist, consider a one-time data migration or add `("", str(qq_account))` to `get_all_bot_accounts()`.
 
 ### 3. `parse_platform_accounts` Key Normalization (Fixed by This Plan)
 
@@ -567,8 +609,8 @@ This plan is complete when:
 
 These are explicitly deferred and should be addressed in subsequent plans:
 
-1. **PFC platform propagation** — Add `platform` to `chat_observer._message_to_dict()` serialization, update consumers in `chat_states.py`, `observation_info.py`, `conversation.py`. Prerequisite for migrating PFC-internal identity checks.
-2. **PFC-internal identity migration** — After propagation is fixed, migrate `reply_checker.py:61`, `action_planner.py:157`, and other PFC dict-based bot checks to `is_bot_self`.
+1. **PFC platform propagation** — Add `platform` to `chat_observer._message_to_dict()` serialization, update consumers in `chat_states.py` ⚠, `observation_info.py` ⚠, `conversation.py` ⚠. Prerequisite for migrating PFC-internal identity checks.
+2. **PFC-internal identity migration** — After propagation is fixed, migrate `reply_checker.py:61` ⚠, `action_planner.py:157` ⚠, and other PFC dict-based bot checks to `is_bot_self`.
 3. **PFC prompt platformization** — Replace `QQ私聊`/`QQ聊天` with platform-aware wording after platform is available in PFC prompt context.
 4. **WebUI identity separation** — Introduce `WEBUI_BOT_USER_ID`, update sender construction, add dual-acceptance transition period.
 5. **Capability query API defaults** — Change `args.get("platform", "qq")` to `args.get("platform", "all_platforms")`.
