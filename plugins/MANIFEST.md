@@ -65,6 +65,15 @@ models/backbone_download.log
 4. 配好外部服务：GPT-SoVITS 语音服务、识图模型与 runtime、QQ 协议端，见 `docs/external-deps.md`；
 5. 启动：`启动一体化.bat` 或 `start_all.ps1`。
 
+## 契约回归测试
+
+`pytests/plugins_test/test_marisa_plugin_contracts.py` 会守住上面登记的第一方插件：
+
+- `_manifest.json` 是否为 v2 且 `id` / `version` / `plugin_type` / `host_application` 齐全；
+- `config.toml` 是否声明 `[plugin].config_version`（缺了宿主加载插件会直接报错）；
+- 关键文件是否**真的入了 git**——磁盘上有、git 里没有，就等于新 clone 缺文件；
+- `run_pet.py` 的引导段是否仍然把插件 `core` 绑定进 `sys.modules`，并把标准输出固定为 UTF-8。
+
 ## 已知待办
 
 - 第三方插件目前是**没有 `.gitmodules` 的裸嵌套仓库**，主仓库无法一键把它们拉起来。要彻底恢复可复现性，建议改成 submodule，或在启动脚本里声明"缺哪个、从哪个 origin 拉"。本轮未动这些仓库的工作树。

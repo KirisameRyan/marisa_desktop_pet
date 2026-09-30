@@ -53,6 +53,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    # build_exe.py 用 python -m PyInstaller 打包桌宠，此前从未声明、.venv 也没装，打包根本跑不起来
+    "pyinstaller>=6.0.0",
     "pytest",
     "pytest-asyncio",
     "ruff>=0.12.2",
