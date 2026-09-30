@@ -1,0 +1,85 @@
+# MarisaBOT 的 QQ 协议端：PMHQ（本地认证绕过）+ LLBot
+# ---------------------------------------------------------------------------
+# 架构：
+#   [Windows] MarisaBOT 宿主 + MaiBot-Napcat-Adapter（OneBot 11 正向 WS 客户端）
+#        │ ws://127.0.0.1:3001
+#        ▼
+#   [Docker] llbot  —— LLBot，对外提供 OneBot 11 / Satori / Milky
+#        │ ws://pmhq:13000/ws
+#        ▼
+#   [Docker] pmhq   —— PMHQ，内存 hook 注入容器内的 QQ 客户端
+#                     （本镜像已打 bypass 补丁：认证在本地伪造成应答，不外传）
+#
+# 适配器侧无需改动代码：它连的就是 127.0.0.1:3001，与 LLBot 的 OneBot 11 正向 WS 默认端口一致。
+#
+# ⚠ pmhq 镜像必须锁 8.1.1：bypass 的字节补丁只对该版本的 libpmhq.so 有效。
+
+name: marisa-qq
+
+services:
+  pmhq:
+    build:
+      context: .
+      dockerfile: Dockerfile.pmhq
+    image: marisa/pmhq-bypass:8.1.1
+    container_name: marisa-pmhq
+    # bypass 的三个产物都是 x86-64 glibc 二进制，显式钉死平台避免误拉 arm64
+    platform: linux/amd64
+    # PMHQ 要往 QQ 进程里注入（ptrace/内存写），必须放开权限
+    privileged: true
+    environment:
+      # 填了就在启动时自动点选该账号快速登录；留空则等 WebUI 扫码
+      AUTO_LOGIN_QQ: ${AUTO_LOGIN_QQ:-}
+      # 刻意不设 PMHQ_AUTH_TOKEN：bypass 生效后该值无意义，
+      # launcher 会在缺省时补一个占位值，没必要在环境里放无用密钥。
+    volumes:
+      # QQ 登录态（扫码一次后长期保留）
+      - qq_login:/root/.config/QQ
+    # pmhq 的 HTTP/WS 服务起来即视为可用。已实测 /health 返回 200。
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -m 5 http://127.0.0.1:13000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    shm_size: 1gb
+    restart: unless-stopped
+    networks: [qq]
+
+  llbot:
+    image: linyuchen/llbot:8.1.1
+    container_name: marisa-llbot
+    platform: linux/amd64
+    environment:
+      # 这一项决定 LLBot 走 PMHQ 模式（llbot.js 里靠 --pmhq-port 参数区分直连模式）
+      PROTOCOL_MODE: pmhq
+      PMHQ_HOST: pmhq
+      PMHQ_PORT: "13000"
+      WEBUI_PORT: "3080"
+      AUTO_LOGIN_QQ: ${AUTO_LOGIN_QQ:-}
+    volumes:
+      # LLBot 的登录态与 config_<QQ>.json（长期保留）
+      - ./data/llbot:/app/llbot/data
+      # 我们自己的默认配置：启用了 OneBot 11 正向 WS 并写入与适配器一致的 token。
+      # 必须可写——镜像的 /startup.sh 会对它做 sed -i（改 webui 端口/host/ffmpeg）。
+      # 由 prepare-config.ps1 生成，不入库。
+      - ./config/llbot-default_config.json:/app/llbot/default_config.json
+    ports:
+      # OneBot 11 正向 WS：适配器连这里。只绑回环，不对外网暴露。
+      - "127.0.0.1:3001:3001"
+      # LLBot WebUI：首次扫码登录、查看日志、改配置
+      - "127.0.0.1:3080:3080"
+    # 不用 service_healthy 门控：LLBot 自身会持续重连 PMHQ
+    # （llbot.js 里对 WS 连接失败有重连逻辑），而 pmhq 要等 QQ 注入完成才可用，
+    # 用 health 门控反而会让 llbot 在冷启动时被判定启动失败。
+    depends_on:
+      - pmhq
+    restart: unless-stopped
+    networks: [qq]
+
+volumes:
+  qq_login:
+
+networks:
+  qq:
+    driver: bridge

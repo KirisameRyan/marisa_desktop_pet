@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1
+#
+# PMHQ 8.1.1 + pmhq-bypass
+# ---------------------------------------------------------------------------
+# 目的：让 PMHQ 在**本机离线**完成它对 Luckylillia 服务端的账号认证绑定，
+#       不再把 QQ 相关信息和环境数据上传出去（见 bypass/PROVENANCE.md 的逐行审计）。
+#
+# ⚠ 版本锁死 8.1.1：bypass 的字节补丁只对 pmhq 8.1.1 的 libpmhq.so 有效。
+#   升级基础镜像会直接让补丁失效——patch_libpmhq 会拒绝执行（不会静默损坏文件），
+#   下面的构建期断言也会让镜像构建失败。
+#
+# bypass 全部**从本仓库收录的源码编译**，不使用上游预编译产物，保证可审计。
+
+# --- 阶段一：编译 bypass 组件（工具链不进入最终镜像） ---------------------
+FROM ubuntu:24.04 AS bypass-build
+
+ENV DEBIAN_FRONTEND=noninteractive
+# libc6-dev 必须显式装：ubuntu 最小镜像里 gcc 不会自动带上 libc 头文件，
+# 缺了会在编译 libpmhqwrap.so 时报 "dlfcn.h: No such file or directory"。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev libssl-dev make \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY bypass/ /src/
+WORKDIR /src
+RUN make
+
+# --- 阶段二：在官方 PMHQ 镜像上投放 bypass --------------------------------
+# 官方镜像布局（linyuchen/pmhq:8.1.1，Ubuntu 24.04）：
+#   /opt/pmhq              —— 主程序，entrypoint 按绝对路径 exec 它
+#   /opt/libpmhq.so        —— 被 patch 的目标
+#   /opt/pmhq_config.json  —— 配置
+#   /startup.sh            —— 入口脚本
+FROM linyuchen/pmhq:8.1.1
+
+# 1) 覆盖之前先留底：launcher 需要原始的 pmhq 作为 pmhq.real
+RUN set -eux; \
+    cp /opt/pmhq /opt/pmhq.real; \
+    cp /opt/libpmhq.so /opt/libpmhq.so.orig
+
+# 2) 投放自行编译的 bypass 组件（launcher 通过 /proc/self/exe 找同级文件，与 cwd 无关）
+COPY --from=bypass-build /src/pmhq           /opt/pmhq
+COPY --from=bypass-build /src/libpmhqwrap.so /opt/libpmhqwrap.so
+COPY --from=bypass-build /src/tlsserver      /opt/tlsserver
+COPY --from=bypass-build /src/patch_libpmhq  /opt/patch_libpmhq
+
+# 3) 打补丁，并在**构建期**强制校验补丁真的落盘。
+#    只跑 patch_libpmhq 就会让它自己拒绝字节不匹配的版本；再加一条独立断言，
+#    是为了排除"补丁工具报成功但文件没变"这种情况——否则容器会看起来正常启动，
+#    实际上仍在尝试联网认证。
+RUN set -eux; \
+    /opt/patch_libpmhq /opt/libpmhq.so | tee /tmp/patch.log; \
+    grep -qx "patched OK" /tmp/patch.log; \
+    test "$(od -An -tx1 -j 484134 -N 6 /opt/libpmhq.so | tr -d ' \n')" = "e92001000090"; \
+    chmod +x /opt/pmhq /opt/tlsserver /opt/pmhq.real; \
+    rm -f /opt/patch_libpmhq /tmp/patch.log; \
+    echo "pmhq bypass 补丁已校验（0x76326: E9 20 01 00 00 90）"

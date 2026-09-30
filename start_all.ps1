@@ -1,12 +1,11 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 <#
-启动一体化：NapCat -> MaiBot -> 桌宠(由 MaiBot 守护拉起)
+启动一体化：QQ协议端(PMHQ+LLBot，Docker) -> MaiBot -> 桌宠(由 MaiBot 守护拉起)
 幂等：已在运行的组件自动跳过，可反复执行。
 #>
 $ErrorActionPreference = "Continue"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$NapCatDir = Join-Path $Root "NapCat.Shell.Windows.Node\napcat"
 $MaiBotDir = $Root
 $PetExe = Join-Path $Root "dist\魔理沙桌宠\魔理沙桌宠.exe"
 $LogDir = Join-Path $Root "data"
@@ -36,18 +35,34 @@ function Wait-PortOpen([int]$port, [int]$seconds, [string]$label) {
 
 Write-Host "================= 魔理沙一体化启动 =================" -ForegroundColor Yellow
 
-# ---------- Step 1: NapCat ----------
-$napcatUp = Test-PortOpen 3001
-$napcatProc = Get-Process -Name "NapCatWinBootMain" -ErrorAction SilentlyContinue
-if ($napcatUp -or $napcatProc) {
-    Write-Host "[跳过] NapCat 已在运行 (3001/进程)" -ForegroundColor DarkYellow
-} else {
-    Write-Host "[启动] 拉起 NapCat (QQ 登录壳)..." -ForegroundColor Cyan
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "launcher-user.bat" `
-        -WorkingDirectory $NapCatDir -WindowStyle Hidden
-    if (-not (Wait-PortOpen 3001 90 "NapCat/QQ")) {
-        Write-Host "  [警告] NapCat 90 秒内未就绪，继续尝试 MaiBot（可稍后手动重启 NapCat）" -ForegroundColor Red
+# ---------- Step 1: QQ 协议端（PMHQ + LLBot，跑在 Docker 里） ----------
+# 2026-09-30 起 QQ 侧由 NapCat 换成 PMHQ + LLBot，部署文件在 deploy/qq-pmhq/。
+# 适配器没变（仍是 plugins/MaiBot-Napcat-Adapter，OneBot 11 正向 WS 客户端），
+# 它连的还是 127.0.0.1:3001 —— 这一步换的只是"谁在 3001 上听"。
+$QqDeployDir = Join-Path $Root "deploy\qq-pmhq"
+$qqCompose = Join-Path $QqDeployDir "docker-compose.yml"
+$qqUp = Test-PortOpen 3001
+if ($qqUp) {
+    Write-Host "[跳过] QQ 协议端已在运行 (3001)" -ForegroundColor DarkYellow
+} elseif (Test-Path -LiteralPath $qqCompose) {
+    Write-Host "[启动] 拉起 QQ 协议端 (PMHQ + LLBot 容器)..." -ForegroundColor Cyan
+    # LLBot 配置由适配器配置推导而来（host/port/token 保持一致），首次运行时生成
+    $llbotCfg = Join-Path $QqDeployDir "config\llbot-default_config.json"
+    if (-not (Test-Path -LiteralPath $llbotCfg)) {
+        Write-Host "  [准备] 生成 LLBot 配置（对齐适配器的端口/token）..." -ForegroundColor DarkCyan
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+            -File (Join-Path $QqDeployDir "prepare-config.ps1") | Out-Host
     }
+    Push-Location $QqDeployDir
+    try { & docker compose up -d --build 2>&1 | Out-Host } finally { Pop-Location }
+    # 首次部署时 QQ 尚未登录，3001 要等扫码完成后才会就绪，所以这里只警告不中断
+    if (-not (Wait-PortOpen 3001 180 "QQ 协议端/OneBot WS")) {
+        Write-Host "  [警告] 180 秒内未就绪。若是首次部署，需要先登录 QQ：" -ForegroundColor Red
+        Write-Host "         方式一：docker compose -f `"$qqCompose`" logs -f llbot  （二维码会打印在日志里）" -ForegroundColor Red
+        Write-Host "         方式二：浏览器打开 http://127.0.0.1:3080 扫码登录" -ForegroundColor Red
+    }
+} else {
+    Write-Host "[警告] 未找到 $qqCompose，QQ 侧不会启动" -ForegroundColor Red
 }
 
 # 模型密钥只有 config/model_config.toml 一份（WebUI「模型配置」页维护），不再需要启动时同步。
@@ -86,7 +101,7 @@ if (-not $petUp) {
 }
 
 Write-Host "================= 启动检查完成 =================" -ForegroundColor Yellow
-Write-Host "  NapCat WebUI : http://127.0.0.1:6099"
+Write-Host "  LLBot WebUI  : http://127.0.0.1:3080"
 Write-Host "  MaiBot WebUI : http://127.0.0.1:8001"
 Write-Host "  桌宠网关     : ws://127.0.0.1:8400"
 Write-Host "（桌宠窗口若未出现，检查任务栏/托盘区域；日志见 $LogDir\maibot_err.log）"

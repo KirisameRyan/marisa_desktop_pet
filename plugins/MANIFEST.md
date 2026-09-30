@@ -48,7 +48,7 @@ models/backbone_download.log
 
 | 目录 | plugin id | 版本 | 远端 | 缺了会怎样 |
 |---|---|---|---|---|
-| `MaiBot-Napcat-Adapter/` | `maibot-team.napcat-adapter` | 1.4.0 | https://github.com/Mai-with-u/MaiBot-Napcat-Adapter.git | **QQ 侧完全不工作**（OneBot v11 正向 WebSocket 客户端） |
+| `MaiBot-Napcat-Adapter/` | `maibot-team.napcat-adapter` | 1.4.0 | https://github.com/Mai-with-u/MaiBot-Napcat-Adapter.git | **QQ 侧完全不工作**（OneBot v11 正向 WebSocket 客户端）。注意：2026-09-30 起它连接的**协议端**已由 NapCat 换成 PMHQ + LLBot（见 `deploy/qq-pmhq/README.md`），适配器自身未改动，仍连 `127.0.0.1:3001` |
 | `xuqian13_tts-voice-plugin/` | `xuqian13.tts-voice-plugin` | 3.3.0 | https://github.com/xuqian13/tts_voice_plugin.git | 另一套 TTS 语音插件，可选 |
 | `internetsb_maizone/` | `internetsb.maizone` | 3.0.2 | https://github.com/internetsb/Maizone.git | 可选扩展 |
 | `github_pan-ice_music/` | `github.pan-ice.music` | 1.4.6 | https://github.com/pan-ice/maibot-music.git | 可选扩展（点歌） |

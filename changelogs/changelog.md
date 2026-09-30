@@ -1,5 +1,30 @@
 # 更新日志
 
+# [1.2.5 魔理沙定制] - 2026-9-30
+
+## QQ 协议端（新）
+
+- QQ 侧由 NapCat 换成 **PMHQ + LLBot**，部署在 `deploy/qq-pmhq/`（Docker 双容器）：LLBot 对外提供 OneBot 11，PMHQ 负责把 QQ 客户端注入起来。
+- PMHQ 会要求把 QQ 相关信息与环境数据上传到 Luckylillia 服务端做账号认证绑定。本方案用 pmhq-bypass（源码收录在 `deploy/qq-pmhq/bypass/`，含逐行审计与哈希）把这一步就地截断成本地伪造应答，认证不再出本机。容器内实测：无任何指向认证服务端的连接，伪造服务只绑回环。
+- 适配器**零改动**：`MaiBot-Napcat-Adapter` 连的仍是 `127.0.0.1:3001`，与 LLBot 的 OneBot 11 正向 WS 默认端口一致；新增 `deploy/qq-pmhq/prepare-config.ps1` 从适配器配置推导 LLBot 配置，端口与 token 两端天然一致。
+- 版本锁死：bypass 的字节补丁只对 pmhq 8.1.1 生效，`Dockerfile.pmhq` 固定基础镜像并在构建期强制校验补丁落盘，避免"看起来起来了其实还在走联网认证"。
+
+## 仓库与工程
+
+- 修复仓库不可复现：`.gitignore` 把 4 个第一方插件反白名单入库（`plugins/` 入库文件 39 → 112）；新增 `plugins/MANIFEST.md` 登记每个插件的来源、版本、必需性与恢复步骤。
+- 修复依赖声明失真：补声明 PyQt6 / pygame / mss / qrcode / pyncm；pyproject 与 requirements.txt 各 41 条逐条一致；`build_exe.py` 依赖却从未声明的 pyinstaller 补进 dev 依赖组。
+- 修复 CI 空转：`ruff.yml` 恢复 push 触发、删掉恒假条件并修掉变更检测 bug；新增 `tests.yml` 跑两个测试根（pytests 1485 + tests 46）。
+- 新增第一方插件与桌宠启动面的契约回归测试（14 个用例，不启动 Qt、不联网）。
+- 文档现状对齐：重写 `docs/minimal-cross-platform-plan.md` 的失效路径引用（历史正文保留）；新增 `docs/external-deps.md`、`docs/plugin-api.md`。
+
+## 细节
+
+- 新增 `deploy/qq-pmhq/`：`Dockerfile.pmhq`、`docker-compose.yml`、`prepare-config.ps1`、`README.md`、`bypass/`（5 个 C 源文件 + PROVENANCE）。
+- `start_all.ps1` / `stop_all.ps1`：QQ 侧改为容器生命周期（`docker compose up -d --build` / `down`）。**不要再按 3001/3080 端口杀进程**——那是 Docker 的端口代理，杀掉会打坏 Docker 网络而容器仍在运行。
+- `deploy/qq-pmhq/prepare-config.ps1` 必须存为 UTF-8 **带 BOM**：Windows PowerShell 5.1 对无 BOM 脚本按 ANSI 解析，中文注释会直接导致语法错误（仓库里既有 `.ps1` 都是带 BOM 的）。
+- 清理：325MB 的历史备份目录、`.bak` 与生成物移出仓库至 `D:\MarisaBOT-quarantine\20260930\`，附可撤销的 `RESTORE.ps1`。
+- `.gitignore`：忽略 NapCat 历史合并备份目录与插件 `config_back/`；`plugins/marisa_cv/config.toml` 必须随主仓库走，且反白名单要排在裸 `config.toml` 规则**之后**才生效（gitignore 是最后匹配者胜）。
+
 # [1.2.4 魔理沙定制] - 2026-9-28
 
 ## 识图（新）

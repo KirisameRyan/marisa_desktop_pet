@@ -12,7 +12,7 @@
 |---|---|---|---|---|
 | GPT-SoVITS 本地语音服务 | 语音合成（TTS） | `http://127.0.0.1:9880` | 语音降级为文字，插件预热失败写 `data/voice_api.log` | `plugins/marisa_voice/config.toml` `[service]` |
 | 本地识图推理服务（marisa_cv） | 东方角色识别 | `http://127.0.0.1:9881` | `marisa_identify_character` 工具与 `/识图` 返回失败文案 | `plugins/marisa_cv/config.toml` `[service]` |
-| NapCat QQ 协议端 | QQ 消息收发 | `127.0.0.1:3001`（适配器连接）；WebUI `6099` | QQ 通道失效（桌面网关与 WebUI 不受影响） | `plugins/MaiBot-Napcat-Adapter/config.toml` `[napcat_server]` |
+| QQ 协议端（PMHQ + LLBot，Docker） | QQ 消息收发 | `127.0.0.1:3001`（适配器连接）；LLBot WebUI `3080` | QQ 通道失效（桌面网关与 WebUI 不受影响） | `deploy/qq-pmhq/docker-compose.yml`、`plugins/MaiBot-Napcat-Adapter/config.toml` `[napcat_server]` |
 | 云端 LLM 供应商 | 对话 / 推理 / 向量 | `https://api.deepseek.com` 等 | 主链无法生成回复 | `config/model_config.toml` `[[api_providers]]` |
 | DeepSeek 余额 API | `/余额`、`marisa_balance` | `https://api.deepseek.com/user/balance` | 命令与工具返回失败文案 | 桌宠 `config.json` 的 DeepSeek 配置 |
 | wttr.in | 天气查询 | `https://wttr.in/<city>?format=j1` | `/天气`、`marisa_weather` 失败 | 无需配置 |
@@ -120,38 +120,57 @@
 - `[cv]`：`enabled`、`threshold`（0.2）、`top_k`（3）、`cooldown_sec`（30.0）、`pending_ttl_sec`（120.0，`/识图` 后等图的秒数）。
 - 若把服务挪到别的端口，除改 `api_url` 外，还要让 `start_cls_api.bat` 或在启动前设置 `MARISA_CV_PORT`，两侧保持一致。
 
-## 3. NapCat QQ 协议端（3001 / 6099）
+## 3. QQ 协议端：PMHQ + LLBot（3001 / 3080）
+
+> 2026-09-30 起，QQ 侧由 **NapCat** 换成 **PMHQ + LLBot**（跑在 Docker 里）。
+> 完整部署说明、版本锁定与回退方式见 [`deploy/qq-pmhq/README.md`](../deploy/qq-pmhq/README.md)；
+> bypass 的源码审计见 [`deploy/qq-pmhq/bypass/PROVENANCE.md`](../deploy/qq-pmhq/bypass/PROVENANCE.md)。
+> 适配器本身没有变，下面仍适用于 `plugins/MaiBot-Napcat-Adapter`。
 
 ### 作用
 
-NapCat 是 QQ 协议实现。MaiBot 通过第一方适配器 `plugins/MaiBot-Napcat-Adapter`（`_manifest.json` 中 `plugin_type` 为 `adapter`）连接它，QQ 才成为平台之一。
+LLBot（LuckyLilliaBot）是 QQ 协议端，对外提供 OneBot 11 / Milky / Satori。
+它的 QQ 接入走 PMHQ（内存 hook 注入 QQ 客户端），PMHQ 的账号认证被本仓库的 bypass 就地截断成本地伪造应答，
+不再上传到 Luckylillia 服务端。MaiBot 通过适配器 `plugins/MaiBot-Napcat-Adapter`
+（`_manifest.json` 中 `plugin_type` 为 `adapter`）连接 LLBot 的 OneBot 11 正向 WS，QQ 才成为平台之一。
 
 ### 端口与默认配置
 
 | 项 | 值 | 依据 |
 |---|---|---|
-| 适配器连接地址 | `127.0.0.1:3001` | `plugins/MaiBot-Napcat-Adapter/config.toml` `[napcat_server] host/port` |
-| 连接 token | 空字符串（默认） | 同节 `token = ""`，需与 NapCat 侧配置一致 |
+| 适配器连接地址 | `127.0.0.1:3001` | `plugins/MaiBot-Napcat-Adapter/config.toml` `[napcat_server] host/port`；LLBot 的 OneBot 11 正向 WS 默认同为 3001 |
+| 连接 token | 空字符串（当前实际值） | 同节 `token`；由 `deploy/qq-pmhq/prepare-config.ps1` 原样写进 LLBot 配置，两端天然一致 |
 | 心跳 / 重连 / 动作超时 | `30.0` / `5.0` / `15.0` 秒 | 同节 `heartbeat_interval` / `reconnect_delay_sec` / `action_timeout_sec` |
-| NapCat WebUI | `6099` | `docker-compose.yml` 的 `6099:6099` 端口映射；`start_all.ps1` 启动完成后打印 `http://127.0.0.1:6099` |
-| 一体化启动的探测端口 | `3001` | `start_all.ps1` 用 `Test-PortOpen 3001` 判断是否已在运行，未就绪则从 `NapCat.Shell.Windows.Node\napcat` 目录拉起（等待 90 秒） |
+| LLBot WebUI | `3080` | `deploy/qq-pmhq/docker-compose.yml` 的 `127.0.0.1:3080:3080`；首次扫码登录在这里 |
+| PMHQ API | `13000`（仅容器网络内） | 同上 compose；容器之间用 `pmhq:13000` 通信，不发布到宿主机 |
+| LLBot 其他协议 | Milky `3010`、Satori `5600` | 均默认关闭，见 `prepare-config.ps1` 生成的默认配置 |
+| 一体化启动的探测端口 | `3001` | `start_all.ps1` 用 `Test-PortOpen 3001` 判断是否已在运行，未就绪则 `docker compose up -d --build`（等待 180 秒，首次需先扫码） |
 
-`stop_all.ps1` 停止时会同时清理 `3001, 4001, 6099` 三个端口对应的进程。
+`stop_all.ps1` 停止时用 `docker compose down`，不再按端口杀进程
+（宿主机上的 3001/3080 是 Docker 的端口代理，杀掉会打坏 Docker 网络而容器还活着）。
 
 ### 缺了会怎样
 
 - QQ 平台收不到消息、也发不出去：主链没有 QQ 侧的聊天流来源。
-- **桌面端与 WebUI 不受影响**：`marisa_desktop` 是独立适配器（`platform="desktop"`，本地 WS 网关 `127.0.0.1:8400`），WebUI 是 `webui` 平台（MaiBot WebUI 端口 `8001`，见 `config/bot_config.toml` `[webui] port`）。这两条通道不经过 NapCat。
-- 适配器侧重连由 `reconnect_delay_sec` 控制，NapCat 未起来时只会反复重试并刷日志，不会让宿主崩溃。
+- **桌面端与 WebUI 不受影响**：`marisa_desktop` 是独立适配器（`platform="desktop"`，本地 WS 网关 `127.0.0.1:8400`），WebUI 是 `webui` 平台（MaiBot WebUI 端口 `8001`，见 `config/bot_config.toml` `[webui] port`）。这两条通道不经过 QQ 协议端。
+- 适配器侧重连由 `reconnect_delay_sec` 控制，协议端未起来时只会反复重试并刷日志，不会让宿主崩溃。
 
 ### 怎么配
 
 1. `plugins/MaiBot-Napcat-Adapter/config.toml`：
-   - `[napcat_server] host/port/token`：与 NapCat 实际监听一致（token 必须与 NapCat 侧相同，否则握手失败）；
+   - `[napcat_server] host/port/token`：与协议端实际监听一致（当前 `127.0.0.1:3001`，token 为空）；
    - `[chat]`：`group_list_type` / `group_list`、`private_list_type` / `private_list` 白名单，`ban_user_id`，`ban_qq_bot`（默认 `true`，即忽略其他 bot 的消息）；
    - `[notice]`：各类事件开关（戳一戳、撤回、禁言、群成员增减等）；
    - `[filters]`：`ignore_self_message`（默认 `true`）、正则过滤。
-2. 一体化启动：双击 `启动一体化.bat`（内部调 `start_all.ps1`），会按 NapCat → MaiBot → 桌宠的顺序幂等拉起；单机调试也可以只手动起 NapCat。
+2. LLBot 侧配置**不要手改**：跑 `deploy/qq-pmhq/prepare-config.ps1` 从适配器配置推导生成，
+   它会把端口与 token 对齐过去。改动适配器端口后重新生成即可。
+3. 一体化启动：双击 `启动一体化.bat`（内部调 `start_all.ps1`），会按 QQ协议端(容器) → MaiBot → 桌宠的顺序幂等拉起。
+
+### 已知限制
+
+适配器调用了一批 OneBot 11 **扩展** action（`get_ai_characters`、`get_ai_record`、`create_flash_task`、
+`get_collection_list` 等）。这些不是 OneBot 11 标准，各协议端覆盖不同，换到 LLBot 后**个别功能**可能失效；
+这属于协议端实现差异，不是配置问题。
 
 ## 4. 其他外部依赖
 
@@ -188,7 +207,7 @@ NapCat 是 QQ 协议实现。MaiBot 通过第一方适配器 `plugins/MaiBot-Nap
 | 端口 | 用途 | 依据 |
 |---|---|---|
 | `3001` | NapCat 协议端（适配器连接） | `plugins/MaiBot-Napcat-Adapter/config.toml`、`start_all.ps1` |
-| `6099` | NapCat WebUI | `docker-compose.yml`、`start_all.ps1` |
+| `3080` | LLBot WebUI（首次扫码登录） | `deploy/qq-pmhq/docker-compose.yml`、`start_all.ps1` |
 | `8001` | MaiBot WebUI / API | `config/bot_config.toml` `[webui] port`、`start_all.ps1` |
 | `8400` | 桌宠本地 WS 网关 | `plugins/marisa_desktop/config.toml` `[server] port`、`start_all.ps1` |
 | `9880` | GPT-SoVITS 语音服务 | `plugins/marisa_voice/config.toml` |
