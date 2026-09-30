@@ -4,9 +4,8 @@ data/
 config.json
 
 # 三方与本地环境
-NapCat.Shell.Windows.Node/
-# 历史合并备份目录（数百 MB，不参与版本控制，避免反复出现在 git status 里）
-NapCat.Shell.Windows.Node.merged-backup-*/
+# NapCat 相关的忽略规则已随 2026-09-30 的协议端替换一并移除：
+# QQ 侧改为 deploy/qq-pmhq/ 下的 PMHQ + LLBot 容器，仓库内不再有 NapCat 目录。
 .zcode/
 
 # 本地备份文件
@@ -30,8 +29,6 @@ pytests/A_memorix_test/data/benchmarks/results/
 data1/
 start_all_memory_limited.bat
 mongodb/
-NapCat.Framework.Windows.Once/
-NapCat.Framework.Windows.OneKey/
 log/
 logs/
 out/
@@ -39,11 +36,8 @@ SnowLuma-v1.6.10-win-x64/
 tool_call_benchmark.py
 run_maibot_core.bat
 run_voice.bat
-run_napcat_adapter.bat
 run_ad.bat
 llm_tool_benchmark_results.json
-MaiBot-Napcat-Adapter-main
-MaiBot-Napcat-Adapter
 /test
 /log_debug
 /src/test
@@ -54,7 +48,6 @@ run_bot.bat
 run_all_in_wt.bat
 run.bat
 log_debug/
-NapCat.Shell.Windows.OneKey
 run_amds.bat
 run_none.bat
 docs-mai/
@@ -106,7 +99,6 @@ __pycache__/
 *$py.class
 maibot_statistics.html
 mongodb
-napcat
 run_dev.bat
 elua.confirmed
 # C extensions

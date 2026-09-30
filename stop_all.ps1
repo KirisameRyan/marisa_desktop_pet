@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 <#
 停止一体化：安全终止 MaiBot（含插件宿主） -> 桌宠 -> QQ协议端(PMHQ+LLBot 容器)
 
@@ -88,19 +88,18 @@ if (-not $petStopped) {
 }
 
 # 3. 停止 QQ 协议端（PMHQ + LLBot 容器）
-#    2026-09-30 起 QQ 侧由 NapCat 换成 Docker 里的 PMHQ + LLBot，所以这里用 compose 停。
-#    ⚠ 不要再按 3001/6099 端口去找进程杀：那些端口现在由 Docker 的端口代理持有，
+#    2026-09-30 起 QQ 侧由 NapCat 换成 Docker 里的 PMHQ + LLBot。
+#    ⚠ 不要再按 3001/3080 端口去找进程杀：那些端口现在由 Docker 的端口代理持有，
 #      杀掉它等于打坏 Docker 的网络，而容器本身还活着。
-#    compose down 只删容器，保留 qq_login 卷与 ./data/llbot —— 登录态不会丢。
+#    具体停止逻辑交给 deploy/qq-pmhq/stop.ps1（默认保留登录态）。
 Write-Host "[3/3] 正在停止 QQ 协议端 (PMHQ + LLBot 容器)..." -ForegroundColor Cyan
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$qqCompose = Join-Path $Root "deploy\qq-pmhq\docker-compose.yml"
-if (Test-Path -LiteralPath $qqCompose) {
-    Push-Location (Split-Path -Parent $qqCompose)
-    try { & docker compose down 2>&1 | Out-Host } finally { Pop-Location }
-    Write-Host "  已停止 marisa-pmhq / marisa-llbot 容器（登录态与数据卷保留）。" -ForegroundColor DarkYellow
+$QqStopScript = Join-Path $Root "deploy\qq-pmhq\stop.ps1"
+if (Test-Path -LiteralPath $QqStopScript) {
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+        -File $QqStopScript | Out-Host
 } else {
-    Write-Host "  未找到 $qqCompose，跳过 QQ 协议端。" -ForegroundColor DarkGray
+    Write-Host "  未找到 $QqStopScript，跳过 QQ 协议端。" -ForegroundColor DarkGray
 }
 
 Write-Host "================= 全部组件已停止 =================" -ForegroundColor Green

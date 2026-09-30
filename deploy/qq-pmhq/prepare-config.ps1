@@ -16,7 +16,7 @@
     适配器配置文件路径，默认取仓库里的 plugins/MaiBot-Napcat-Adapter/config.toml。
 
 .PARAMETER QQ
-    要自动登录的 QQ 号。不传则尝试从 NapCat 的 onebot11_<QQ>.json 文件名里推断。
+    要自动登录的 QQ 号。不传则依次尝试：已有 .env → LLBot 已登录生成的 config_<QQ>.json → 历史 NapCat 配置。
 
 .PARAMETER Force
     生成物已存在时是否覆盖。默认不覆盖，避免把已经登录后产生的配置冲掉。
@@ -61,7 +61,28 @@ if ([string]::IsNullOrWhiteSpace($adapterPort)) { $adapterPort = '3001' }
 if ([string]::IsNullOrWhiteSpace($adapterHost)) { $adapterHost = '127.0.0.1' }
 
 # ---------- 2. 推断 QQ 号（用于快速登录） ----------
+# 依次尝试：已有 .env → LLBot 已登录生成的 config_<QQ>.json → 历史 NapCat 配置 → 留空。
+# NapCat 已从本仓库移除，所以它只是最后的历史兜底，不再是主要来源。
 if ([string]::IsNullOrWhiteSpace($QQ)) {
+    $envFile = Join-Path $deployDir '.env'
+    if (Test-Path -LiteralPath $envFile) {
+        $m = [regex]::Match((Get-Content -LiteralPath $envFile -Raw), '(?m)^AUTO_LOGIN_QQ=(\d+)')
+        if ($m.Success) { $QQ = $m.Groups[1].Value }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($QQ)) {
+    $llbotDataDir = Join-Path $deployDir 'data\llbot'
+    if (Test-Path -LiteralPath $llbotDataDir) {
+        $cfg = Get-ChildItem -LiteralPath $llbotDataDir -Filter 'config_*.json' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch 'default' } | Select-Object -First 1
+        if ($cfg) {
+            $m = [regex]::Match($cfg.Name, '^config_(\d+)\.json$')
+            if ($m.Success) { $QQ = $m.Groups[1].Value }
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($QQ)) {
+    # 历史兜底：NapCat 时代的 onebot11_<QQ>.json（该目录已随 NapCat 一起删除）
     $napcatConfigDir = Join-Path $repoRoot 'NapCat.Shell.Windows.Node\napcat\config'
     if (Test-Path -LiteralPath $napcatConfigDir) {
         $onebot = Get-ChildItem -LiteralPath $napcatConfigDir -Filter 'onebot11_*.json' -ErrorAction SilentlyContinue |

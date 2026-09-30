@@ -206,7 +206,7 @@ LLBot（LuckyLilliaBot）是 QQ 协议端，对外提供 OneBot 11 / Milky / Sat
 
 | 端口 | 用途 | 依据 |
 |---|---|---|
-| `3001` | NapCat 协议端（适配器连接） | `plugins/MaiBot-Napcat-Adapter/config.toml`、`start_all.ps1` |
+| `3001` | QQ 协议端 OneBot 11 正向 WS（适配器连接） | `deploy/qq-pmhq/docker-compose.yml`、`plugins/MaiBot-Napcat-Adapter/config.toml` |
 | `3080` | LLBot WebUI（首次扫码登录） | `deploy/qq-pmhq/docker-compose.yml`、`start_all.ps1` |
 | `8001` | MaiBot WebUI / API | `config/bot_config.toml` `[webui] port`、`start_all.ps1` |
 | `8400` | 桌宠本地 WS 网关 | `plugins/marisa_desktop/config.toml` `[server] port`、`start_all.ps1` |

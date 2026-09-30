@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 <#
 启动一体化：QQ协议端(PMHQ+LLBot，Docker) -> MaiBot -> 桌宠(由 MaiBot 守护拉起)
 幂等：已在运行的组件自动跳过，可反复执行。
@@ -39,30 +39,17 @@ Write-Host "================= 魔理沙一体化启动 =================" -Foreg
 # 2026-09-30 起 QQ 侧由 NapCat 换成 PMHQ + LLBot，部署文件在 deploy/qq-pmhq/。
 # 适配器没变（仍是 plugins/MaiBot-Napcat-Adapter，OneBot 11 正向 WS 客户端），
 # 它连的还是 127.0.0.1:3001 —— 这一步换的只是"谁在 3001 上听"。
+# 具体逻辑（Docker 守护进程、配置生成、等待端口、登录状态）都由子脚本负责，这里不重复实现。
 $QqDeployDir = Join-Path $Root "deploy\qq-pmhq"
-$qqCompose = Join-Path $QqDeployDir "docker-compose.yml"
+$QqStartScript = Join-Path $QqDeployDir "start.ps1"
 $qqUp = Test-PortOpen 3001
 if ($qqUp) {
     Write-Host "[跳过] QQ 协议端已在运行 (3001)" -ForegroundColor DarkYellow
-} elseif (Test-Path -LiteralPath $qqCompose) {
-    Write-Host "[启动] 拉起 QQ 协议端 (PMHQ + LLBot 容器)..." -ForegroundColor Cyan
-    # LLBot 配置由适配器配置推导而来（host/port/token 保持一致），首次运行时生成
-    $llbotCfg = Join-Path $QqDeployDir "config\llbot-default_config.json"
-    if (-not (Test-Path -LiteralPath $llbotCfg)) {
-        Write-Host "  [准备] 生成 LLBot 配置（对齐适配器的端口/token）..." -ForegroundColor DarkCyan
-        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
-            -File (Join-Path $QqDeployDir "prepare-config.ps1") | Out-Host
-    }
-    Push-Location $QqDeployDir
-    try { & docker compose up -d --build 2>&1 | Out-Host } finally { Pop-Location }
-    # 首次部署时 QQ 尚未登录，3001 要等扫码完成后才会就绪，所以这里只警告不中断
-    if (-not (Wait-PortOpen 3001 180 "QQ 协议端/OneBot WS")) {
-        Write-Host "  [警告] 180 秒内未就绪。若是首次部署，需要先登录 QQ：" -ForegroundColor Red
-        Write-Host "         方式一：docker compose -f `"$qqCompose`" logs -f llbot  （二维码会打印在日志里）" -ForegroundColor Red
-        Write-Host "         方式二：浏览器打开 http://127.0.0.1:3080 扫码登录" -ForegroundColor Red
-    }
+} elseif (Test-Path -LiteralPath $QqStartScript) {
+    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass `
+        -File $QqStartScript | Out-Host
 } else {
-    Write-Host "[警告] 未找到 $qqCompose，QQ 侧不会启动" -ForegroundColor Red
+    Write-Host "[警告] 未找到 $QqStartScript，QQ 侧不会启动" -ForegroundColor Red
 }
 
 # 模型密钥只有 config/model_config.toml 一份（WebUI「模型配置」页维护），不再需要启动时同步。
