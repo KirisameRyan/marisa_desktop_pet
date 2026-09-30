@@ -12,7 +12,34 @@ from typing import Optional
 import httpx
 import pygame
 
-from .config_manager import APP_CONFIG
+from .config_manager import APP_CONFIG, DATA_DIR
+
+# 语音服务启动输出与跨进程启动锁：与宿主 marisa_voice 插件共用同一份
+_VOICE_API_LOG = DATA_DIR / "voice_api.log"
+_START_LOCK_PATH = DATA_DIR / "voice_api.start.lock"
+
+
+def _open_voice_log():
+    """打开语音服务输出日志（追加）；打不开时退回丢弃输出。"""
+
+    try:
+        _VOICE_API_LOG.parent.mkdir(parents=True, exist_ok=True)
+        return open(_VOICE_API_LOG, "ab")
+    except OSError:
+        return subprocess.DEVNULL
+
+
+def _try_acquire_start_lock(ttl_sec: float) -> bool:
+    """跨进程启动锁：宿主侧已在拉起语音服务时返回 False，避免重复加载抢显存。"""
+
+    try:
+        _START_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if _START_LOCK_PATH.exists() and time.time() - _START_LOCK_PATH.stat().st_mtime < ttl_sec:
+            return False
+        _START_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+        return True
+    except OSError:
+        return True
 
 # 初始化 pygame 音频混音器
 try:
@@ -135,15 +162,24 @@ class TTSEngine:
                 return False
             self._last_start_ts = time.time()
 
+        # 宿主侧可能也在预热：拿不到锁就只等它，不重复拉起第二个实例
+        if not _try_acquire_start_lock(float(self._cfg("api_start_timeout_sec", 180.0))):
+            print("[TTS] 语音服务已在拉起中，等待就绪…")
+            return True
+
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             subprocess.Popen(
-                ["cmd", "/c", script],
+                # cmd /d /s /c 双引号写法：路径含 (1) 这类括号时，普通 cmd /c 会截断命令秒退
+                f'cmd /d /s /c ""{script}""',
                 cwd=os.path.dirname(script),
                 creationflags=flags,
                 close_fds=True,
+                stdout=_open_voice_log(),
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
             )
-            print(f"[TTS] 正在拉起语音服务: {script}")
+            print(f"[TTS] 正在拉起语音服务: {script}（输出见 {_VOICE_API_LOG}）")
             return True
         except Exception as e:
             print(f"[TTS] 拉起语音服务失败: {e}")

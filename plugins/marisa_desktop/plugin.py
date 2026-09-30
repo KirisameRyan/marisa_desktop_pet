@@ -31,6 +31,19 @@ _NATIVE_DIR = _PLUGIN_DIR / "native"
 if str(_NATIVE_DIR) not in sys.path:
     sys.path.insert(0, str(_NATIVE_DIR))
 
+# 桌宠启动输出：拉起的进程必须留下现场（此前 Popen 不重定向，"秒退"类问题完全没法查）
+_PET_LOG = _PLUGIN_DIR.parent.parent / "data" / "pet.log"
+
+
+def _open_pet_log() -> Any:
+    """打开桌宠输出日志（追加）；打不开时退回丢弃输出。"""
+
+    try:
+        _PET_LOG.parent.mkdir(parents=True, exist_ok=True)
+        return open(_PET_LOG, "ab")
+    except OSError:
+        return subprocess.DEVNULL
+
 
 def _load_plugin_module(module_stem: str) -> Any:
     """按文件路径加载插件目录下的模块。
@@ -755,7 +768,7 @@ class MarisaDesktopPlugin(MaiBotPlugin):
             return bool(self._pet_proc is not None and self._pet_proc.poll() is None)
 
     def _spawn_pet(self) -> None:
-        """拉起桌宠（隐藏窗口）。"""
+        """拉起桌宠（隐藏窗口；stdout/stderr 追加写 data/pet.log）。"""
         try:
             cmd = self._pet_cmd()
             if not cmd or not os.path.exists(cmd[0]):
@@ -765,15 +778,31 @@ class MarisaDesktopPlugin(MaiBotPlugin):
             kwargs: Dict[str, Any] = {
                 "creationflags": create_no_window,
                 "close_fds": True,
+                "stdout": _open_pet_log(),
+                "stderr": subprocess.STDOUT,
+                "stdin": subprocess.DEVNULL,
             }
             if str(self.config.launcher.pet_mode).strip().lower() == "dev" or not os.path.exists(
                 str(self.config.launcher.pet_exe or "")
             ):
                 kwargs["cwd"] = str(self.config.launcher.dev_workdir or os.getcwd())
             self._pet_proc = subprocess.Popen(cmd, **kwargs)
-            self.ctx.logger.info("[marisa_desktop] 已拉起桌宠: %s", cmd)
+            self.ctx.logger.info("[marisa_desktop] 已拉起桌宠: %s（输出见 %s）", cmd, _PET_LOG)
+            asyncio.create_task(self._watch_pet_process(self._pet_proc))
         except Exception as exc:
             self.ctx.logger.info("[marisa_desktop] 拉起桌宠失败: %s", exc)
+
+    async def _watch_pet_process(self, process: Any) -> None:
+        """等待桌宠退出并记录退出码，便于定位「拉起就秒退」类问题。"""
+
+        try:
+            code = await asyncio.to_thread(process.wait)
+        except Exception as exc:
+            self.ctx.logger.info("[marisa_desktop] 等待桌宠退出失败: %s", exc)
+            return
+        self.ctx.logger.info(
+            "[marisa_desktop] 桌宠进程已退出，退出码=%s（输出见 %s）", code, _PET_LOG
+        )
 
 
     # ───────────────────────── 远程执行命令（主人 → 桌宠 action） ─────────────────────────

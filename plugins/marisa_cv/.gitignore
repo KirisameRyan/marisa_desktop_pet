@@ -1,0 +1,5 @@
+# 大文件不进仓库：模型与特征可用 tools/ 下的脚本重新生成
+models/backbone/
+models/wd_features.onnx
+models/head.npz
+models/backbone_download.log

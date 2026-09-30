@@ -3,7 +3,7 @@
 让魔理沙**自己决定**什么时候用语音说话，而不是被插件偷偷把文字换成语音。
 
 实现方式：注册一个对 LLM 可见的 ``marisa_say`` 工具。模型判断该开口时调用它，
-插件用本地 GPT-SoVITS（宵宫音色）合成，再通过 NapCat 发成语音条；工具返回
+插件用本地 GPT-SoVITS（当前音色）合成，再通过 NapCat 发成语音条；工具返回
 ``stop_after_execution=True`` 结束本轮规划，所以不会再补一条文字——真正做到
 "要么打字、要么说话"。
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import os
 import re
 import subprocess
 import time
@@ -32,9 +33,36 @@ from maibot_sdk import Command, Field, HomeCard, MaiBotPlugin, PluginConfigBase,
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _PLUGIN_DIR.parent.parent
+# 语音服务的启动输出与跨进程启动锁放在工程 data 下，桌宠侧也写同一个日志文件
+_VOICE_API_LOG = _PROJECT_ROOT / "data" / "voice_api.log"
+_START_LOCK_PATH = _PROJECT_ROOT / "data" / "voice_api.start.lock"
+
+
+def _open_voice_log() -> Any:
+    """打开语音服务输出日志（追加）；打不开时退回丢弃输出。"""
+
+    try:
+        _VOICE_API_LOG.parent.mkdir(parents=True, exist_ok=True)
+        return open(_VOICE_API_LOG, "ab")
+    except OSError:
+        return subprocess.DEVNULL
+
+
+def _try_acquire_start_lock(ttl_sec: float) -> bool:
+    """跨进程启动锁：短时间内已有进程在拉起语音服务时返回 False，避免重复加载抢显存。"""
+
+    try:
+        _START_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if _START_LOCK_PATH.exists() and time.time() - _START_LOCK_PATH.stat().st_mtime < ttl_sec:
+            return False
+        _START_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+        return True
+    except OSError:
+        return True
 
 # 日文假名区段（平假名 / 片假名 / 假名扩展 / 半角片假名）。
-# 宵宫是纯中文模型，没有日文前端，假名会被当中文音素错误朗读，送合成前一律剔除。
+# 当前音色模型是纯中文模型，没有日文前端，假名会被当中文音素错误朗读，送合成前一律剔除。
 _KANA_RANGES = ((0x3040, 0x309F), (0x30A0, 0x30FF), (0x31F0, 0x31FF), (0xFF66, 0xFF9D))
 _DROP_CATEGORIES = frozenset({"So", "Sk", "Cs", "Co", "Cn", "Cf"})
 
@@ -101,7 +129,7 @@ def _load_tool_hints() -> tuple[str, str]:
 _USE_HINT, _LENGTH_HINT = _load_tool_hints()
 
 _TOOL_DESCRIPTION = (
-    "用魔理沙自己的声音（本地 GPT-SoVITS 宵宫音色）把一句话说出去，聊天里会收到一条语音。"
+    "用魔理沙自己的声音（本地 GPT-SoVITS 音色）把一句话说出去，聊天里会收到一条语音。"
     f"{_USE_HINT}{_LENGTH_HINT}"
     "【重要】调用本工具后本轮回复就此结束，不会再额外发送文字，"
     "所以 text 必须是完整的、可以直接说给对方听的回复内容（口语化，不要 markdown、表情符号或舞台提示）。"
@@ -119,7 +147,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=False, description="是否启用插件")
-    config_version: str = Field(default="1.0.0", description="配置版本")
+    config_version: str = Field(default="1.2.0", description="配置版本")
 
 
 class VoiceConfig(PluginConfigBase):
@@ -146,6 +174,13 @@ class VoiceConfig(PluginConfigBase):
         ge=10,
         le=300,
         description="超过这个字数就让模型改用文字（合成太慢，会让人干等）",
+        json_schema_extra={"depends_on": "enabled", "depends_value": True},
+    )
+    cooldown_sec: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=600.0,
+        description="同一人两次 /语音 的最小间隔（秒），0=不限制；防止群友刷合成队列",
         json_schema_extra={"depends_on": "enabled", "depends_value": True},
     )
     send_mode: Literal["file", "base64"] = Field(
@@ -177,11 +212,11 @@ class ServiceConfig(PluginConfigBase):
         description="GPT-SoVITS API 地址",
     )
     ref_audio_path: str = Field(
-        default=r"D:\GPT-SoVITS-v4-20250421fix(1)\GPT-SoVITS-v4-20250422fix\【默认】哇，你做点心的手艺很不一般啊！去祭典上摆摊的话，肯定会成为最热门的那一个吧！.wav",
+        default=r"D:\GPT-SoVITS-v4-20250421fix(1)\GPT-SoVITS-v4-20250422fix\output\model.wav",
         description="参考音频路径（3-10 秒），决定音色",
     )
     prompt_text: str = Field(
-        default="哇，你做点心的手艺很不一般啊！去祭典上摆摊的话，肯定会成为最热门的那一个吧！",
+        default="而且这次不一样，动机和证据我都凑齐了。",
         description="参考音频里说的那句话，必须逐字一致",
     )
     prompt_lang: str = Field(default="zh", description="参考文本语种")
@@ -207,6 +242,10 @@ class ServiceConfig(PluginConfigBase):
         le=600.0,
         description="等待服务就绪的最长时间（秒）",
     )
+    prewarm: bool = Field(
+        default=True,
+        description="宿主启动时预热语音服务：首句不用等模型加载，启动失败会写日志并给桌宠提示",
+    )
 
 
 class MarisaVoiceConfig(PluginConfigBase):
@@ -228,6 +267,9 @@ class MarisaVoicePlugin(MaiBotPlugin):
     def __init__(self) -> None:
         super().__init__()
         self._synth_sem: asyncio.Semaphore = asyncio.Semaphore(_SYNTH_CONCURRENCY)
+        self._prewarm_task: Optional[asyncio.Task] = None
+        # 公开 /语音 的按人冷却：key = "platform:user_id"
+        self._last_say: Dict[str, float] = {}
 
     async def on_load(self) -> None:
         voice = self.config.voice
@@ -238,9 +280,47 @@ class MarisaVoicePlugin(MaiBotPlugin):
             voice.min_chars,
             voice.max_chars,
         )
+        if bool(self.config.service.prewarm):
+            self._prewarm_task = asyncio.create_task(self._prewarm_service())
 
     async def on_unload(self) -> None:
         """插件卸载时无需清理后台任务。"""
+        if self._prewarm_task is not None and not self._prewarm_task.done():
+            self._prewarm_task.cancel()
+
+    async def _prewarm_service(self) -> None:
+        """宿主启动时预热语音服务：首句不用再等模型加载，失败也留下可见记录。"""
+
+        svc = self.config.service
+        base_url = str(svc.api_url or "").rstrip("/")
+        if not base_url:
+            return
+        try:
+            ok = await self._ensure_service(base_url, svc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.ctx.logger.warning("[marisa_voice] 语音服务预热异常: %s", exc)
+            return
+        if ok:
+            self.ctx.logger.info("[marisa_voice] 语音服务预热完成")
+            return
+        self.ctx.logger.warning(
+            "[marisa_voice] 语音服务预热失败：启动输出见 %s；桌宠说话与 /语音 会降级为文字",
+            _VOICE_API_LOG,
+        )
+        await self._notify_pet(f"语音服务没起来だぜ……主人看看 {_VOICE_API_LOG} 吧。")
+
+    async def _notify_pet(self, text: str) -> None:
+        """通过桌面适配器的公开 API 给桌宠推一条气泡（桌宠不在线则忽略）。"""
+
+        try:
+            await self.ctx.api.call(
+                "marisa-team.marisa-desktop.push_pet_frame",
+                frame={"type": "bot_message", "text": text, "message_id": "", "raw_message": []},
+            )
+        except Exception:
+            pass
 
     async def on_config_update(self, scope: str, config_data: Dict[str, Any], version: str) -> None:
         """配置热更新回调。
@@ -265,7 +345,7 @@ class MarisaVoicePlugin(MaiBotPlugin):
     @HomeCard(
         "marisa_voice_entry",
         title="魔理沙语音",
-        description="魔理沙自己决定什么时候用宵宫音色发语音条。",
+        description="魔理沙自己决定什么时候用当前音色发语音条。",
         content=[
             {
                 "type": "markdown",
@@ -312,7 +392,7 @@ class MarisaVoicePlugin(MaiBotPlugin):
         visibility="visible",
     )
     async def tool_say(self, text: str = "", **kwargs: Any) -> Dict[str, Any]:
-        """把一句话用宵宫音色说出去；成功时终止本轮规划，不再补文字。"""
+        """把一句话用当前音色说出去；成功时终止本轮规划，不再补文字。"""
         cfg = self.config.voice
         if not cfg.enabled:
             return {"success": False, "content": "语音功能当前已关闭，请直接用文字回复。"}
@@ -358,9 +438,8 @@ class MarisaVoicePlugin(MaiBotPlugin):
 
     @Command(
         "marisa_voice_say",
-        description="让魔理沙用当前音色念一段话：/语音 <文本>",
+        description="让魔理沙用当前音色念一段话：/语音 <文本>（所有人可用）",
         pattern=cmd_pattern(r"/(?:语音|说话|朗读)(?:\s+[\s\S]+)?\s*$"),
-        permission="operator",
     )
     async def cmd_say(self, **kwargs: Any) -> tuple:
         if not isinstance(kwargs, dict):
@@ -382,6 +461,18 @@ class MarisaVoicePlugin(MaiBotPlugin):
             if stream_id:
                 await self.ctx.send.text("这段话没有可朗读的内容呢……", stream_id)
             return True, "", True
+
+        # 公开指令：按调用者做冷却，防止群友连续刷合成队列
+        cooldown = float(self.config.voice.cooldown_sec)
+        caller_key = f"{kwargs.get('platform') or '?'}:{kwargs.get('user_id') or '?'}"
+        if cooldown > 0 and caller_key != "?:?":
+            now = time.monotonic()
+            wait = cooldown - (now - self._last_say.get(caller_key, 0.0))
+            if wait > 0:
+                if stream_id:
+                    await self.ctx.send.text(f"别急だぜ，等 {wait:.0f} 秒再让我说～", stream_id)
+                return True, "", True
+            self._last_say[caller_key] = now
 
         voice_path = await self._synthesize(spoken, float(self.config.service.synthesize_timeout_sec))
         if not voice_path:
@@ -502,7 +593,7 @@ class MarisaVoicePlugin(MaiBotPlugin):
             return False
 
     async def _ensure_service(self, base_url: str, svc: ServiceConfig) -> bool:
-        """服务没起来时按配置自动拉起并等待就绪。"""
+        """服务没起来时按配置自动拉起并等待就绪（启动输出写入 data/voice_api.log）。"""
         if await self._service_alive(base_url):
             return True
         if not svc.auto_start_api:
@@ -514,26 +605,46 @@ class MarisaVoicePlugin(MaiBotPlugin):
             self.ctx.logger.warning("[marisa_voice] 找不到启动脚本: %s", script or "(未配置)")
             return False
 
-        try:
-            subprocess.Popen(
-                ["cmd", "/c", script],
-                cwd=str(Path(script).parent),
-                creationflags=0x08000000,
-                close_fds=True,
-            )
-            self.ctx.logger.info("[marisa_voice] 正在拉起语音服务: %s", script)
-        except Exception as exc:
-            self.ctx.logger.warning("[marisa_voice] 拉起语音服务失败: %s", exc)
-            return False
+        timeout_sec = float(svc.api_start_timeout_sec)
+        # 桌宠与宿主可能同时发现服务掉线：拿不到锁说明已有进程在拉，等它就好
+        if _try_acquire_start_lock(timeout_sec):
+            self._spawn_voice_api(script)
+        else:
+            self.ctx.logger.info("[marisa_voice] 语音服务已在拉起中，等待就绪…")
 
-        deadline = time.monotonic() + float(svc.api_start_timeout_sec)
+        deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             await asyncio.sleep(3)
             if await self._service_alive(base_url):
                 self.ctx.logger.info("[marisa_voice] 语音服务已就绪")
                 return True
-        self.ctx.logger.warning("[marisa_voice] 语音服务未在超时内就绪")
+        self.ctx.logger.warning(
+            "[marisa_voice] 语音服务未在 %.0f 秒内就绪，启动输出见 %s",
+            timeout_sec,
+            _VOICE_API_LOG,
+        )
         return False
+
+    def _spawn_voice_api(self, script: str) -> None:
+        """拉起 GPT-SoVITS。
+
+        必须用 ``cmd /d /s /c ""脚本""`` 的双引号写法：路径里只要带 ``(1)`` 这类括号，
+        普通 ``cmd /c 脚本`` 会被 cmd 当成命令分隔符截断，进程秒退且没有任何输出。
+        """
+
+        try:
+            subprocess.Popen(
+                f'cmd /d /s /c ""{script}""',
+                cwd=str(Path(script).parent),
+                creationflags=0x08000000,
+                close_fds=True,
+                stdout=_open_voice_log(),
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+            )
+            self.ctx.logger.info("[marisa_voice] 正在拉起语音服务: %s", script)
+        except Exception as exc:
+            self.ctx.logger.warning("[marisa_voice] 拉起语音服务失败: %s", exc)
 
 
 def _prune_cache(out_dir: Path, keep_hours: float = 24.0) -> None:

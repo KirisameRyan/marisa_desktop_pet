@@ -37,8 +37,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # 语音只走本地 GPT-SoVITS，下面这些是接入它所需的参数。
         # 缺失时 tts.py 会以空参考音频请求接口，合成结果必然是噪音，所以默认值必须带上。
         "gpt_sovits_api_url": "http://127.0.0.1:9880",
-        "ref_audio_path": r"D:\GPT-SoVITS-v4-20250421fix(1)\GPT-SoVITS-v4-20250422fix\【默认】哇，你做点心的手艺很不一般啊！去祭典上摆摊的话，肯定会成为最热门的那一个吧！.wav",
-        "prompt_text": "哇，你做点心的手艺很不一般啊！去祭典上摆摊的话，肯定会成为最热门的那一个吧！",
+        "ref_audio_path": r"D:\GPT-SoVITS-v4-20250421fix(1)\GPT-SoVITS-v4-20250422fix\output\model.wav",
+        "prompt_text": "而且这次不一样，动机和证据我都凑齐了。",
         "prompt_lang": "zh",
         "text_lang": "zh",
         "text_split_method": "cut5",

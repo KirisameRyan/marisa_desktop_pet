@@ -1,0 +1,46 @@
+{
+  "manifest_version": 2,
+  "version": "1.0.0",
+  "name": "魔理沙识图",
+  "description": "本地识别图片里的东方角色：WD-ConvNeXt v3 特征 + 数据集自带的 134 位角色分类头；提供识图工具与 /识图 待图流程，只回答「图里有谁」。",
+  "author": {
+    "name": "Marisa Desktop Team",
+    "url": "https://github.com/"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/",
+    "homepage": "https://github.com/",
+    "documentation": "https://github.com/",
+    "issues": "https://github.com/"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "httpx",
+      "version_spec": ">=0.27.0"
+    }
+  ],
+  "capabilities": [
+    "send.text",
+    "message.get_recent",
+    "config.get"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "marisa-team.marisa-cv",
+  "plugin_type": "extension"
+}

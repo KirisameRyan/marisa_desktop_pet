@@ -1,0 +1,10 @@
+{
+  "input_size": 448,
+  "input_layout": "NHWC",
+  "input_range": "0-255 原始像素（归一化在模型内）",
+  "channel": "bgr",
+  "padding": "白底补方形",
+  "output_tensor": "/core_model/head/flatten/Flatten_output_0",
+  "feature_dim": 1024,
+  "match": "图片实测与数据集特征余弦≈1.0"
+}
