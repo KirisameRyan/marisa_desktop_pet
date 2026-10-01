@@ -71,20 +71,37 @@ def _audit(kind: str, mode: str, cmd: str, cwd: str, rc: int, tail: str) -> None
         pass
 
 
+def _decode_console(raw: bytes) -> str:
+    """解码子进程输出。
+
+    PowerShell 5.1 在管道重定向下是按**系统 ANSI 码页**输出的（中文系统 = GBK），
+    不是 UTF-8；直接按 UTF-8 解会得到乱码（踩过：回复里出现
+    「取消失败：��Ϊû���κν����еĹػ����̣�…」）。所以先用 UTF-8 严格解码，
+    失败即说明它就是 ANSI 码页，再用 mbcs 解。
+    """
+
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("mbcs", errors="replace")
+
+
 def _run_pwsh(command: str, cwd: str, timeout_sec: float) -> Dict[str, Any]:
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
             cwd=cwd,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=float(timeout_sec),
             creationflags=0x08000000,
         )
-        out = (proc.stdout or "").strip() + ("\n" + (proc.stderr or "").strip() if (proc.stderr or "").strip() else "")
-        return {"rc": proc.returncode, "out": out.strip()}
+        out = _decode_console(proc.stdout or b"").strip()
+        err = _decode_console(proc.stderr or b"").strip()
+        if err:
+            out = f"{out}\n{err}".strip()
+        return {"rc": proc.returncode, "out": out}
     except subprocess.TimeoutExpired:
         return {"rc": -1, "out": f"执行超时（>{timeout_sec}s），已终止。"}
     except Exception as exc:
@@ -173,15 +190,29 @@ _CANCEL_WORDS = ("取消", "算了", "别执行", "不执行")
 _ACTION_HINT_WORDS = ("关机", "重启", "终端", "git", "commit", "push", "提交", "推送", "拉取", "执行计划")
 
 
+_CONFIRM_MAX_CHARS = 12
+
+
+def _is_reply_like(text: str, word: str) -> bool:
+    """判断这句是不是"对提案的回执"，而不是正文里恰好含了关键词。
+
+    踩过的坑：主人发「…给出一份清理整合建议 不执行文件修改」，正文里的「不执行」
+    命中了取消词，整条请求被当成"取消"吞掉（还顺手跑了一次 shutdown /a）。
+    """
+
+    return len(text) <= _CONFIRM_MAX_CHARS or text.startswith(word)
+
+
 def parse_confirm(text: str) -> Tuple[Optional[int], Optional[str]]:
     """宽松解析主人的确认/取消指令。
 
-    返回 (code, action|None)。裸『执行』仅在短句或含动作词时视为确认，防误触。
+    返回 (code, action|None)。裸『执行』仅在短句或含动作词时视为确认，防误触；
+    取消同理——只在"整句就是一句取消"时才认，避免正文里的词被误判。
     """
     t = (text or "").strip()
     low = t.lower()
     for w in _CANCEL_WORDS:
-        if w in t:
+        if w in t and _is_reply_like(t, w):
             code = _extract_code(t)
             return (code, "cancel")
     has_exec = any(w in t for w in _CONFIRM_WORDS)
@@ -234,7 +265,12 @@ def shutdown_action(seconds: int, cancel: bool, default_workdir: str) -> str:
     if cancel:
         res = _run_pwsh("shutdown /a", default_workdir, 15)
         _audit("shutdown", "cancel", "shutdown /a", default_workdir, res["rc"], res["out"][:300])
-        return "已尝试取消关机/重启だぜ。" if res["rc"] == 0 else f"取消失败：{res['out'][:200]}"
+        if res["rc"] == 0:
+            return "已尝试取消关机/重启だぜ。"
+        # 1116 = ERROR_NO_SHUTDOWN_IN_PROGRESS：本来就没排过关机，这不是"取消失败"
+        if "1116" in res["out"]:
+            return "本来就没有进行中的关机计划だぜ（不用取消）。"
+        return f"取消失败：{res['out'][:200]}"
     sec = max(0, int(seconds or 30))
     return propose("shutdown", f"shutdown /s /t {sec}", default_workdir, {"seconds": sec})
 
