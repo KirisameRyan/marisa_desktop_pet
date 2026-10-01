@@ -399,37 +399,6 @@ class MarisaGatePlugin(MaiBotPlugin):
             groups = [str(x).strip() for x in cfg.rules.groups if str(x).strip()]
             is_owner = sender in owners
 
-            # 主人对清理方案的回执（必须带方案编号）优先拦截；裸「执行/取消」仍归终端
-            if is_owner and await self._maybe_handle_cleanup_confirm(text, session_id):
-                return {"action": "abort"}
-
-            # 主人对终端待办的回执（执行 / 取消）优先拦截处理
-            if is_owner and cfg.terminal.enabled:
-                code, action = SE.parse_confirm(text)
-                if action == "exec":
-                    item = SE.pop_pending(code)
-                    if item is None:
-                        await self._try_reply(session_id, "没有找到待确认的命令だぜ（可能已过期）。")
-                    else:
-                        result = SE.execute_pending(
-                            item,
-                            timeout_sec=float(cfg.terminal.timeout_shell_sec),
-                        )
-                        await self._try_reply(session_id, result)
-                    return {"action": "abort"}
-                if action == "cancel":
-                    item = SE.pop_pending(code)
-                    replies = []
-                    if item is not None:
-                        replies.append("已取消该待办だぜ。")
-                        if item.get("kind") == "shutdown":
-                            replies.append(SE.shutdown_action(0, cancel=True, default_workdir=str(cfg.terminal.workdir_default)))
-                    else:
-                        # 无待办时也顺手取消一次系统关机计时（幂等）
-                        replies.append(SE.shutdown_action(0, cancel=True, default_workdir=str(cfg.terminal.workdir_default)))
-                    await self._try_reply(session_id, "\n".join(replies))
-                    return {"action": "abort"}
-
             prefix_hit = text.startswith(PREFIX_WORDS)
             mentioned_hit = is_mentioned or any(w in text for w in PREFIX_WORDS)
 
@@ -445,7 +414,7 @@ class MarisaGatePlugin(MaiBotPlugin):
             if not is_group:
                 # 私聊：仅主人（标记身份，供 AI 识别）
                 if is_owner:
-                    self._tag_as(message, text, "主人")
+                    self._tag_as(message, text, "主人", self._pending_hint())
                     if self._fav.get() < 100:
                         self._fav.add(1, "QQ私聊互动", hourly_cap=int(cfg.rules.fav_chat_cap_per_hour))
                     return cont
@@ -461,7 +430,7 @@ class MarisaGatePlugin(MaiBotPlugin):
                 return {"action": "abort"}
 
             if is_owner:
-                self._tag_as(message, text, "主人")
+                self._tag_as(message, text, "主人", self._pending_hint())
                 return cont
 
             # 群友：冷却控制（敏感操作由宿主 operator 权限与工具运行时校验兜底）
@@ -1039,6 +1008,114 @@ class MarisaGatePlugin(MaiBotPlugin):
         if not tc.enabled:
             return "远程终端总开关没开だぜ。"
         return SE.shutdown_action(max(0, int(seconds or 30)), bool(cancel), str(tc.workdir_default))
+
+    # ───────────────── 待确认：意图归模型，执行归这里 ─────────────────
+
+    def _pending_hint(self) -> str:
+        """给主人消息附一句"现在有什么待确认"。
+
+        这是"意图判断交给模型"的落点：不再用正则去猜主人那句话是不是回执，
+        而是把待确认清单搭在消息上，让模型自己看着办。
+        """
+
+        parts = [f"P{item.get('code')}={str(item.get('cmd') or '')[:40]}" for item in SE.list_pending()]
+        plan = CP.get_pending_plan()
+        if plan:
+            parts.append(f"清理方案P{plan.get('code')}")
+        return "待确认 " + "；".join(parts) if parts else ""
+
+    def _render_pending(self) -> str:
+        """待确认清单的文本形式（给模型看）。"""
+
+        items = SE.list_pending()
+        plan = CP.get_pending_plan()
+        if not items and not plan:
+            return "现在没有待确认的东西だぜ。"
+        lines = ["待确认："]
+        for item in items:
+            lines.append(
+                f"· [terminal] P{item.get('code')}（{item.get('kind')}）：{str(item.get('cmd') or '')[:120]}"
+            )
+        if plan:
+            note = str(plan.get("summary") or plan.get("reason") or "").strip()
+            lines.append(f"· [cleanup] P{plan.get('code')}：清理方案{'（' + note[:80] + '）' if note else ''}")
+        lines.append("要执行用 marisa_pending_confirm，要取消用 marisa_pending_cancel，记得带 source。")
+        return "\n".join(lines)
+
+    @Tool(
+        "marisa_pending_list",
+        description="列出当前所有待确认项（终端/关机命令、清理方案）及其编号。主人回复『执行 P1』『算了』这类话时，先用它看清有什么待确认，再决定调用确认还是取消工具。",
+    )
+    async def tool_pending_list(self, **kwargs: Any) -> str:
+        if not await self._tool_owner_ok(kwargs):
+            return "这个操作得让主人来だぜ～"
+        del kwargs
+        return self._render_pending()
+
+    @Tool(
+        "marisa_pending_confirm",
+        description="执行一条**已存在**的待确认项。source=terminal 执行终端/关机待确认；source=cleanup 执行清理方案。编号取自 marisa_pending_list，不存在或已过期会被拒绝。",
+        parameters=[
+            ToolParameterInfo(name="code", param_type=ToolParamType.INTEGER, description="待确认编号（见 marisa_pending_list）", required=True),
+            ToolParameterInfo(name="source", param_type=ToolParamType.STRING, description="terminal 或 cleanup", required=False),
+            ToolParameterInfo(name="selected", param_type=ToolParamType.STRING, description="清理方案：要处理的条目（如 1,3；留空=全部）", required=False),
+            ToolParameterInfo(name="permanent", param_type=ToolParamType.BOOLEAN, description="清理方案：是否彻底删除（默认进回收站）", required=False),
+        ],
+    )
+    async def tool_pending_confirm(
+        self,
+        code: int = 0,
+        source: str = "terminal",
+        selected: str = "",
+        permanent: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        if not await self._tool_owner_ok(kwargs):
+            return "这个操作得让主人来だぜ～"
+        stream_id = str(kwargs.get("stream_id") or "")
+        if str(source or "").strip().lower() == "cleanup":
+            # 交给既有的清理流程：编号/条目/是否彻底的机械解析由 CP.parse_confirm 做，
+            # 但它吃的是**这里拼出来的字符串**，不是主人的原话——正则不再判断意图。
+            text = f"执行 P{int(code)}"
+            if str(selected or "").strip():
+                text += f" {str(selected).strip()}"
+            if bool(permanent):
+                text += " 彻底"
+            handled = await self._maybe_handle_cleanup_confirm(text, stream_id)
+            return "清理方案已受理だぜ。" if handled else f"没有编号 P{int(code)} 的清理方案（可能已过期）。"
+
+        item = SE.pop_pending(int(code))
+        if item is None:
+            return f"没有编号 P{int(code)} 的待确认命令（可能已过期）。"
+        tc = self._term_cfg()
+        return SE.execute_pending(item, timeout_sec=float(tc.timeout_shell_sec))
+
+    @Tool(
+        "marisa_pending_cancel",
+        description="取消一条待确认项（不会执行）。source=terminal 取消终端/关机待确认；source=cleanup 取消清理方案。",
+        parameters=[
+            ToolParameterInfo(name="code", param_type=ToolParamType.INTEGER, description="待确认编号（见 marisa_pending_list）", required=True),
+            ToolParameterInfo(name="source", param_type=ToolParamType.STRING, description="terminal 或 cleanup", required=False),
+        ],
+    )
+    async def tool_pending_cancel(self, code: int = 0, source: str = "terminal", **kwargs: Any) -> str:
+        if not await self._tool_owner_ok(kwargs):
+            return "这个操作得让主人来だぜ～"
+        stream_id = str(kwargs.get("stream_id") or "")
+        if str(source or "").strip().lower() == "cleanup":
+            handled = await self._maybe_handle_cleanup_confirm(f"取消 P{int(code)}", stream_id)
+            return "清理方案已取消だぜ。" if handled else f"没有编号 P{int(code)} 的清理方案（可能已过期）。"
+
+        item = SE.pop_pending(int(code))
+        if item is None:
+            return f"没有编号 P{int(code)} 的待确认命令（可能已过期）。"
+        replies = ["已取消该待办だぜ。"]
+        if item.get("kind") == "shutdown":
+            tc = self._term_cfg()
+            replies.append(
+                SE.shutdown_action(0, cancel=True, default_workdir=str(tc.workdir_default))
+            )
+        return "\n".join(replies)
 
     # ───────────────────────── 电脑管家（只读体检） ─────────────────────────
 

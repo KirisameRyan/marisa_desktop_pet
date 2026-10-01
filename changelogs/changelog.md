@@ -32,6 +32,7 @@
 
 ## 细节
 
+- **确认/取消不再靠正则判断意图**：删除 `shell_exec.parse_confirm`（确认/取消词表 + 短句阈值补丁）与 gate 钩子里的两条抢话分支。它曾把主人「…给出一份合理的清理整合建议 不执行文件修改」误判成"取消"，还顺手跑了一次 `shutdown /a`，整条请求被吞掉、根本没到 DSH。现在改为：把待确认清单作为 `〔主人·待确认 P1=…〕` 搭在消息上，**由模型判断这条是不是回执**，再调用新增的 `marisa_pending_list` / `marisa_pending_confirm` / `marisa_pending_cancel` 三个工具；执行侧仍由代码硬校验（编号必须存在、owner 校验、过期即拒），`source=cleanup` 时把**机器拼出的字符串**交给既有清理解析器——正则不再接触用户原话。斜杠指令（`/取消关机`、`/终端` 等）属于语法而非意图，保持确定性路由不变。
 - 退役 `/opencode`：AI 远程任务统一交给 DSH（`/dsh`），删掉 `marisa_gate` 的 `marisa_opencode` 工具、`/opencode` 指令、`_run_opencode`/`opencode_action` 与 `execute_pending` 的 opencode 分支，以及 `[terminal]` 的 `timeout_opencode_sec` / `opencode_cmd` 两项配置；`/终端`、`/关闭电脑`、`/取消关机` 与提案-确认、审计机制全部保留。删除后插件内 opencode 引用为 0，`py_compile` 通过，顺带移除因此不再使用的 `shutil` 导入。
 - 移除「提醒」功能：删除 `plugins/marisa_desktop/native/reminders.py`，以及 `marisa_desktop` 里与之相关的三个工具（`marisa_reminder_add/list/delete`）、三条指令（`/提醒`、`/提醒列表`、`/提醒删除`）、每分钟对表的后台循环、帮助菜单的「提醒」分类与条目。删除后插件内相关引用为 0，`py_compile` 通过。
 - 修复语音发送失败：`plugins/marisa_voice` 的 `[voice] send_mode` 由 `file` 改为 `base64`（代码默认值、字段说明、配置与两处文档同步）。协议端换成容器化的 LLBot 后，`file` 模式发出的本地路径会被适配器补成 `file://D:\…`，LLBot 在容器里找不到该路径并抛「路径不存在」，机器人表现为回一句「语音发送失败了……」。该默认在 NapCat 与宿主同机时成立，换协议端后不再成立。

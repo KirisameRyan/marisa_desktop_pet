@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 MARISA_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "marisa"
 MARISA_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -185,51 +185,15 @@ def propose(kind: str, cmd: str, workdir: str, opts: Optional[Dict[str, Any]] = 
     return f"待确认 P{code}：`{cmd}` —— 回复：执行 P{code}"
 
 
-_CONFIRM_WORDS = ("执行", "确认执行", "好的执行", "就执行", "执行吧", "确认")
-_CANCEL_WORDS = ("取消", "算了", "别执行", "不执行")
-_ACTION_HINT_WORDS = ("关机", "重启", "终端", "git", "commit", "push", "提交", "推送", "拉取", "执行计划")
+def list_pending() -> List[Dict[str, Any]]:
+    """列出当前全部待确认（不弹出）。
 
-
-_CONFIRM_MAX_CHARS = 12
-
-
-def _is_reply_like(text: str, word: str) -> bool:
-    """判断这句是不是"对提案的回执"，而不是正文里恰好含了关键词。
-
-    踩过的坑：主人发「…给出一份清理整合建议 不执行文件修改」，正文里的「不执行」
-    命中了取消词，整条请求被当成"取消"吞掉（还顺手跑了一次 shutdown /a）。
+    「这条消息是不是对某条待确认的回执」由模型判断（见 marisa_gate 的
+    marisa_pending_* 工具），这里只如实列出，不做任何关键词匹配。
     """
 
-    return len(text) <= _CONFIRM_MAX_CHARS or text.startswith(word)
-
-
-def parse_confirm(text: str) -> Tuple[Optional[int], Optional[str]]:
-    """宽松解析主人的确认/取消指令。
-
-    返回 (code, action|None)。裸『执行』仅在短句或含动作词时视为确认，防误触；
-    取消同理——只在"整句就是一句取消"时才认，避免正文里的词被误判。
-    """
-    t = (text or "").strip()
-    low = t.lower()
-    for w in _CANCEL_WORDS:
-        if w in t and _is_reply_like(t, w):
-            code = _extract_code(t)
-            return (code, "cancel")
-    has_exec = any(w in t for w in _CONFIRM_WORDS)
-    if not has_exec:
-        return (None, None)
-    code = _extract_code(t)
-    if code is not None:
-        return (code, "exec")
-    # 无编号：短句或含动作词才放行
-    if len(t) <= 6 or any(w in low for w in _ACTION_HINT_WORDS):
-        return (None, "exec")
-    return (None, None)
-
-
-def _extract_code(text: str) -> Optional[int]:
-    m = re.search(r"[pP]\s*(\d{1,4})", text)
-    return int(m.group(1)) if m else None
+    with _lock:
+        return list(_load_pending())
 
 
 def pop_pending(code: Optional[int]) -> Optional[Dict[str, Any]]:
