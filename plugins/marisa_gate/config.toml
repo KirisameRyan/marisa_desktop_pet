@@ -17,9 +17,7 @@ enabled = true
 confirm_required = true
 workdir_default = "D:\\MarisaBOT"
 timeout_shell_sec = 60.0
-timeout_opencode_sec = 900.0
 output_cap_chars = 1500
-opencode_cmd = "opencode"
 
 [cleanup] # 电脑管家：只读体检 → 计划 → 确认 → 执行
 roots = [] # 清理扫描根白名单；留空回退桌面/下载/文档。文件操作只能落在这些目录里

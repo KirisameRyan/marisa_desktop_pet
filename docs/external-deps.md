@@ -17,7 +17,7 @@
 | DeepSeek 余额 API | `/余额`、`marisa_balance` | `https://api.deepseek.com/user/balance` | 命令与工具返回失败文案 | 桌宠 `config.json` 的 DeepSeek 配置 |
 | wttr.in | 天气查询 | `https://wttr.in/<city>?format=j1` | `/天气`、`marisa_weather` 失败 | 无需配置 |
 | 网易云音乐本机客户端 | 本机点歌 / 播放控制 | Windows `orpheus://` 协议 | 点歌类指令失败 | 桌宠 `config.json` |
-| opencode CLI | 远程代码任务 | 本机 `opencode` 命令 | `marisa_opencode` 工具失败 | `plugins/marisa_gate/config.toml` `[terminal] opencode_cmd` |
+| DSH CLI（DeepSeek Harness） | 远程让 DSH 在本机干活（更新、改配置、跑迭代） | DSH 安装目录的 `dsh.cmd` | `/dsh` 与 `marisa_dsh_task` 失败 | `plugins/marisa_dsh/config.toml` `[dsh] cli_path` |
 
 ## 1. 本地 GPT-SoVITS 语音服务（默认 9880）
 
@@ -198,9 +198,11 @@ LLBot（LuckyLilliaBot）是 QQ 协议端，对外提供 OneBot 11 / Milky / Sat
 
 本机点歌 / 播放控制依赖**已安装的网易云音乐客户端**与 `orpheus://` 协议：`plugins/marisa_desktop/native/ncm_client.py` 会从注册表 `Software\Classes\orpheus\shell\open\command` 动态探测客户端路径并修补协议（HKCU 覆盖 HKLM，无需管理员），再通过 `orpheus://<base64 JSON>` 播放单曲或歌单。扫码登录二维码内容为 `https://music.163.com/login?codekey=<uuid>`（`plugins/marisa_desktop/native/third_party/cloud_music_mcp/auth.py:118`）。客户端未安装或协议未注册时，点歌类指令失败。
 
-### opencode CLI 与本机 shell
+### 本机 shell 与远程 AI 任务
 
-`plugins/marisa_gate/config.toml` `[terminal]` 设定：`workdir_default = "D:\\MarisaBOT"`、`timeout_shell_sec = 60.0`、`timeout_opencode_sec = 900.0`、`output_cap_chars = 1500`、`opencode_cmd = "opencode"`、`confirm_required = true`。`marisa_shell` / `marisa_shutdown` / `marisa_opencode` 三个工具因此依赖本机 PowerShell、关机权限与 PATH 里的 `opencode` 命令。
+`plugins/marisa_gate/config.toml` `[terminal]` 设定：`workdir_default = "D:\\MarisaBOT"`、`timeout_shell_sec = 60.0`、`output_cap_chars = 1500`、`confirm_required = true`。`marisa_shell` / `marisa_shutdown` 两个工具因此依赖本机 PowerShell 与关机权限。
+
+远程**需要 AI 动手**的任务不再走这里（`/opencode` 已退役），改由 `plugins/marisa_dsh` 的 `/dsh <任务>` 交给 DeepSeek Harness 执行，见 `deploy/` 之外的 `plugins/MANIFEST.md` 与 `docs/plugin-api.md` 的 `marisa_dsh` 一节。
 
 ## 5. 端口全景（来自启动脚本与配置实读）
 

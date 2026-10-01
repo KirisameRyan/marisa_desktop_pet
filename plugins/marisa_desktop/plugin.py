@@ -1490,8 +1490,8 @@ class MarisaDesktopPlugin(MaiBotPlugin):
             return (await self._ncm_login_send(stream_id)) or "二维码图片已发给主人，用手机网易云 App 扫一扫だぜ♪"
         if cmd in ("截图", "截屏"):
             return "QQ 里用 /截图 能收到图；桌面上可以直接看屏幕だぜ。"
-        if cmd in ("终端", "关闭电脑", "关机", "取消关机", "opencode"):
-            return "该指令需要在 QQ（@她说）：/终端 · /关闭电脑 · /取消关机 · /opencode 走确认流程だぜ。"
+        if cmd in ("终端", "关闭电脑", "关机", "取消关机", "dsh"):
+            return "该指令需要在 QQ（@她说）：/终端 · /关闭电脑 · /取消关机 · /dsh <任务> 走确认流程だぜ。"
         return None
 
     # ---------------- QQ 原生命令：桌宠能力（/斜杠 触发，默认仅管理员） ----------------

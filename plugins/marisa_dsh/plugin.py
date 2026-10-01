@@ -433,7 +433,13 @@ class MarisaDshPlugin(MaiBotPlugin):
 
         head = f"DSH 干完了（rc={rc}）：\n{_clip(answer, int(self.config.dsh.max_output_chars))}"
         if usage.get("totalTokens"):
-            head += f"\n\n〔本轮 {usage.get('totalTokens')} tokens〕"
+            # 把「新增」与「缓存命中」分开报：固定前缀（系统提示+工具表+工作区）每轮都会重发，
+            # 但稳定前缀会走 prompt cache，真正按全价算的只有新增那部分。
+            head += (
+                f"\n\n〔本轮 tokens：新增 {usage.get('inputTokens', 0)}"
+                f" / 缓存命中 {usage.get('cacheReadTokens', 0)}"
+                f" / 输出 {usage.get('outputTokens', 0)}〕"
+            )
         return head
 
     # ───────────────────────── 工具 ─────────────────────────
@@ -541,8 +547,9 @@ class MarisaDshPlugin(MaiBotPlugin):
             if stream_id:
                 await self.ctx.send.text(
                     "用法：\n"
-                    "· /dsh <任务> —— 交给 DSH 执行，完成后把结果发你\n"
-                    "· /dsh 继续 <补充> —— 接续上一次 DSH 会话继续改\n"
+                    "· /dsh <任务> —— 交给 DSH 执行（默认接续上次会话），完成后把结果发你\n"
+                    "· /dsh 新 <任务> —— 不管上次，干净地开一次新会话\n"
+                    "· /dsh 继续 <补充> —— 显式接续上一次 DSH 会话继续改\n"
                     "· /dsh 状态 —— 看桥和 CLI 的状态\n"
                     "· /dsh 会话 —— 看当前记着的会话号\n"
                     "· /dsh 忘记 —— 丢掉当前会话号（下次开新会话）\n"
@@ -587,9 +594,23 @@ class MarisaDshPlugin(MaiBotPlugin):
             asyncio.create_task(self._bg_run(follow_up, session_key, stream_id, sid))
             return True, "", True
 
+        # 默认**接续**本会话上一次的 DSH 会话：上下文连续，主人不用重述做过什么；
+        # 要干净地另起一次就用「/dsh 新 <任务>」。实测新会话与接续的总 token 几乎相同
+        # （固定前缀都要重发且都命中缓存），所以这里按"少让主人重述"来选默认。
+        reuse = ""
+        if body.startswith("新"):
+            body = body[len("新"):].strip()
+            if not body:
+                if stream_id:
+                    await self.ctx.send.text("开新会话也要带任务：/dsh 新 <任务>", stream_id)
+                return True, "", True
+        else:
+            reuse = self._last_session(session_key)
+
         if stream_id:
-            await self.ctx.send.text("收到，交给 DSH 了，跑完把结果发你だぜ。", stream_id)
-        asyncio.create_task(self._bg_run(body, session_key, stream_id, ""))
+            note = f"接上次那次会话（{reuse}）" if reuse else "开一次新会话"
+            await self.ctx.send.text(f"收到，{note}交给 DSH 了，跑完把结果发你だぜ。", stream_id)
+        asyncio.create_task(self._bg_run(body, session_key, stream_id, reuse))
         return True, "", True
 
     async def _bg_run(self, task: str, session_key: str, stream_id: str, session_id: str) -> None:

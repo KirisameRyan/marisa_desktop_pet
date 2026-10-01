@@ -10,7 +10,7 @@
 2. 给放行的消息打身份隐形标记：主人消息=〔主人〕，群友消息=〔群友〕，供 AI 识别说话者
 3. 跨端好感度服务：单一 json 事实源（与桌面/QQ 同一颗大脑共用）
 4. 显式回图指令：/截图（QQ 收图需要显式触发，permission=operator 由宿主鉴权）
-5. 远程终端家族（/终端 · /关闭电脑 · /取消关机 · /opencode）确定性执行与提案-确认
+5. 远程终端家族（/终端 · /关闭电脑 · /取消关机）确定性执行与提案-确认
 
 命令级门控已移交 MaiBot 原生体系：桌宠 /指令由 marisa_desktop 注册为
 permission="operator" 的 @Command，宿主按 plugin.permission 名单先行拦截；
@@ -230,7 +230,7 @@ class GateRuleConfig(PluginConfigBase):
     deepseek_api_key: str = Field(default="", description="DeepSeek API Key（查余额用；留空则读 D:\\MarisaBOT\\config.json）")
 
 class GateTerminalConfig(PluginConfigBase):
-    """远程终端（PowerShell/git/关机/opencode）。"""
+    """远程终端（PowerShell/git/关机）。"""
 
     __ui_label__ = "远程终端"
     __ui_order__ = 3
@@ -239,9 +239,7 @@ class GateTerminalConfig(PluginConfigBase):
     confirm_required: bool = Field(default=True, description="非只读命令必须先回复『执行』确认")
     workdir_default: str = Field(default=r"D:\MarisaBOT", description="默认工作目录")
     timeout_shell_sec: float = Field(default=60.0, description="普通命令超时（秒）")
-    timeout_opencode_sec: float = Field(default=900.0, description="opencode 超时（秒）")
     output_cap_chars: int = Field(default=1500, description="回传输出上限字符数")
-    opencode_cmd: str = Field(default="opencode", description="opencode 可执行文件（留空探测 PATH）")
 
 
 class GateCleanupConfig(PluginConfigBase):
@@ -415,8 +413,7 @@ class MarisaGatePlugin(MaiBotPlugin):
                     else:
                         result = SE.execute_pending(
                             item,
-                            timeout_sec=float(cfg.terminal.timeout_opencode_sec if item.get("kind") == "opencode" else cfg.terminal.timeout_shell_sec),
-                            opencode_cmd=str(cfg.terminal.opencode_cmd or "opencode"),
+                            timeout_sec=float(cfg.terminal.timeout_shell_sec),
                         )
                         await self._try_reply(session_id, result)
                     return {"action": "abort"}
@@ -540,14 +537,6 @@ class MarisaGatePlugin(MaiBotPlugin):
             return SE.shutdown_action(sec, cancel=False, default_workdir=str(tc.workdir_default))
         if cmd in ("取消关机", "取消"):
             return SE.shutdown_action(0, cancel=True, default_workdir=str(tc.workdir_default))
-        if cmd == "opencode":
-            if not args:
-                return "用法：/opencode <任务> [只读]。例：/opencode 只读 分析下这个项目结构"
-            if "只读" in args[:8]:
-                task = args
-                asyncio.create_task(self._bg_opencode(task, str(tc.workdir_default), session_id))
-                return "opencode 已开工（只读），完成后把结果发你だぜ。"
-            return SE.opencode_action(args, "", False, float(tc.timeout_opencode_sec), str(tc.opencode_cmd or "opencode"), str(tc.workdir_default))
         return None
 
     # ---- 电脑管家：只读体检（第一阶段只报告，不执行任何清理） ----
@@ -979,20 +968,6 @@ class MarisaGatePlugin(MaiBotPlugin):
         except Exception:
             pass
 
-    async def _bg_opencode(self, task: str, cwd: str, session_id: str) -> None:
-        try:
-            result = await asyncio.to_thread(
-                SE.opencode_action, task, cwd, True,
-                float(self._term_cfg().timeout_opencode_sec),
-                str(self._term_cfg().opencode_cmd or "opencode"), cwd,
-            )
-        except Exception as exc:
-            result = f"opencode 执行失败：{exc}"
-        try:
-            await self.ctx.send.text(result, session_id)
-        except Exception:
-            pass
-
     @staticmethod
     def _tag_as(message: dict, text: str, tag: str, detail: str = "") -> None:
         """给放行的消息加身份隐形标记（〔主人〕/〔群友·小明·熟络〕），供 AI 识别说话者。"""
@@ -1064,31 +1039,6 @@ class MarisaGatePlugin(MaiBotPlugin):
         if not tc.enabled:
             return "远程终端总开关没开だぜ。"
         return SE.shutdown_action(max(0, int(seconds or 30)), bool(cancel), str(tc.workdir_default))
-
-    @Tool(
-        "marisa_opencode",
-        description="远程使用 opencode（AI 编程助手）执行代码/仓库任务。read_only=true 只分析不改动；否则会先提议并等主人回复『执行』。会话内禁止 commit/push。",
-        parameters=[
-            ToolParameterInfo(name="task", param_type=ToolParamType.STRING, description="要交给 opencode 的任务描述", required=True),
-            ToolParameterInfo(name="workdir", param_type=ToolParamType.STRING, description="工作目录（默认 D:\\MarisaBOT）", required=False),
-            ToolParameterInfo(name="read_only", param_type=ToolParamType.BOOLEAN, description="true=只读分析不修改", required=False),
-        ],
-    )
-    async def tool_opencode(self, task: str = "", workdir: str = "", read_only: bool = False, **kwargs: Any) -> str:
-        if not await self._tool_owner_ok(kwargs):
-            return "这个操作得让主人来だぜ～"
-        del kwargs
-        tc = self._term_cfg()
-        if not tc.enabled:
-            return "远程终端总开关没开だぜ。"
-        return SE.opencode_action(
-            str(task or ""),
-            str(workdir or ""),
-            bool(read_only),
-            float(tc.timeout_opencode_sec),
-            str(tc.opencode_cmd or "opencode"),
-            str(tc.workdir_default),
-        )
 
     # ───────────────────────── 电脑管家（只读体检） ─────────────────────────
 

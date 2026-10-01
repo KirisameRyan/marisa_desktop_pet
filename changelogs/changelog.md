@@ -15,6 +15,9 @@
 - 指令：`/dsh <任务>`（后台跑、完成后把结果发回群里）、`/dsh 继续 <补充>`（用 `--session-id` 接续同一次 DSH 会话）、`/dsh 状态`、`/dsh 会话`、`/dsh 忘记`；另有 `marisa_dsh_task` / `marisa_dsh_status` 两个工具供模型主动调用（工具默认按只读下发）。
 - 实现走 DSH 自带的一次性任务入口 `dsh --profile <档> headless --json <任务>`：取 `final.text` 作回答、`session.sessionId` 作可接续会话号、`status.usage` 报 token 用量。任务以参数列表交给子进程（不拼 shell 字符串），`.cmd` 经 `cmd.exe /c` 调用。
 - 命令一律 `permission="operator"`，工具再做一次运行时主人校验；每次执行写审计日志 `data/marisa/dsh_audit.log` 并把完整输出落盘 `data/marisa/dsh_runs/`，QQ 只回摘要。
+- 会话策略：`/dsh <任务>` **默认接续**本会话上一次的 DSH 会话（不用重述做过什么），`/dsh 新 <任务>` 才干净地另起一次。实测新会话与接续的总 token 几乎相同（固定前缀每轮都要重发，但稳定前缀会命中 prompt cache），所以默认值按"少让主人重述"来选。
+- 用量回执把「新增 / 缓存命中 / 输出」分开报，便于判断真实开销。
+- 工具 `marisa_dsh_task` 改为**后台提交**：原实现会 inline 等 DSH 跑完（最长 900 秒），模型一旦调用就把整轮对话卡住；现在立刻返回「已提交」，结果由后台任务直接推回会话。工具描述同时补上典型触发场景，自然语言（如「把某个文件夹加进工作区」）现在能被路由过来。
 
 ## 仓库与工程
 
@@ -26,6 +29,7 @@
 
 ## 细节
 
+- 退役 `/opencode`：AI 远程任务统一交给 DSH（`/dsh`），删掉 `marisa_gate` 的 `marisa_opencode` 工具、`/opencode` 指令、`_run_opencode`/`opencode_action` 与 `execute_pending` 的 opencode 分支，以及 `[terminal]` 的 `timeout_opencode_sec` / `opencode_cmd` 两项配置；`/终端`、`/关闭电脑`、`/取消关机` 与提案-确认、审计机制全部保留。删除后插件内 opencode 引用为 0，`py_compile` 通过，顺带移除因此不再使用的 `shutil` 导入。
 - 移除「提醒」功能：删除 `plugins/marisa_desktop/native/reminders.py`，以及 `marisa_desktop` 里与之相关的三个工具（`marisa_reminder_add/list/delete`）、三条指令（`/提醒`、`/提醒列表`、`/提醒删除`）、每分钟对表的后台循环、帮助菜单的「提醒」分类与条目。删除后插件内相关引用为 0，`py_compile` 通过。
 - 修复语音发送失败：`plugins/marisa_voice` 的 `[voice] send_mode` 由 `file` 改为 `base64`（代码默认值、字段说明、配置与两处文档同步）。协议端换成容器化的 LLBot 后，`file` 模式发出的本地路径会被适配器补成 `file://D:\…`，LLBot 在容器里找不到该路径并抛「路径不存在」，机器人表现为回一句「语音发送失败了……」。该默认在 NapCat 与宿主同机时成立，换协议端后不再成立。
 - `deploy/qq-pmhq/README.md` 新增「媒体路径陷阱」一节：列出 base64 / http / file 三种媒体引用在容器化协议端下的行为差异，并给出图片、视频、`file` 组件等同类问题的排查方法。

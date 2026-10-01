@@ -9,7 +9,6 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -42,7 +41,7 @@ _BLACKLIST_RE = [
 _SAFE_READONLY_RE = [
     re.compile(r"^git\s+(?:-C\s+\S+\s+)?(?:status|log|diff|show|branch|remote|fetch|tag|stash\s+list|config\s+--get|rev-parse|ls-files)\b", re.I),
     re.compile(r"^(?:pwd|dir|ls|get-childitem|where\b|where.exe|echo|get-date|hostname|ipconfig|systeminfo|ver|whoami)\b", re.I),
-    re.compile(r"^(?:git|python|opencode)\s+--version\b", re.I),
+    re.compile(r"^(?:git|python)\s+--version\b", re.I),
 ]
 
 _FORCE_CONFIRM_TOKENS = (
@@ -95,16 +94,6 @@ def _run_pwsh(command: str, cwd: str, timeout_sec: float) -> Dict[str, Any]:
 def _ps_quote(text: str) -> str:
     """PowerShell 单引号包裹并转义。"""
     return "'" + str(text).replace("'", "''") + "'"
-
-
-def _run_opencode(task: str, cwd: str, timeout_sec: float, opencode_cmd: str) -> Dict[str, Any]:
-    exe = str(opencode_cmd or "").strip() or "opencode"
-    resolved = shutil.which(exe) if exe == "opencode" else exe
-    if not resolved and not Path(exe).exists():
-        return {"rc": -2, "out": "找不到 opencode 命令。请先安装：npm install -g opencode-ai（装完在桌宠设置/插件配置里把 opencode_cmd 指向它）。"}
-    # 经 PowerShell 调用，兼容 .cmd/.exe/npm 全局 shim
-    ps_cmd = "& " + _ps_quote(resolved) + " run " + _ps_quote(task)
-    return _run_pwsh(ps_cmd, cwd, timeout_sec)
 
 
 def _resolve_cwd(workdir: str, default_workdir: str) -> str:
@@ -163,11 +152,11 @@ def propose(kind: str, cmd: str, workdir: str, opts: Optional[Dict[str, Any]] = 
         items = _load_pending()
         now = time.time()
         items = [x for x in items if now - float(x.get("created", 0)) < ttl_sec]
-        # 单飞去重：同类（shutdown/opencode）只留一条；shell 同命令去重
+        # 单飞去重：关机类只留一条；shell 同命令去重
         items = [
             x for x in items
             if not (
-                (x.get("kind") in ("shutdown", "opencode") and x.get("kind") == kind)
+                (x.get("kind") == "shutdown" and x.get("kind") == kind)
                 or (x.get("kind") == kind and x.get("cmd") == cmd)
             )
         ]
@@ -181,7 +170,7 @@ def propose(kind: str, cmd: str, workdir: str, opts: Optional[Dict[str, Any]] = 
 
 _CONFIRM_WORDS = ("执行", "确认执行", "好的执行", "就执行", "执行吧", "确认")
 _CANCEL_WORDS = ("取消", "算了", "别执行", "不执行")
-_ACTION_HINT_WORDS = ("关机", "重启", "终端", "git", "opencode", "commit", "push", "提交", "推送", "拉取", "执行计划")
+_ACTION_HINT_WORDS = ("关机", "重启", "终端", "git", "commit", "push", "提交", "推送", "拉取", "执行计划")
 
 
 def parse_confirm(text: str) -> Tuple[Optional[int], Optional[str]]:
@@ -250,24 +239,7 @@ def shutdown_action(seconds: int, cancel: bool, default_workdir: str) -> str:
     return propose("shutdown", f"shutdown /s /t {sec}", default_workdir, {"seconds": sec})
 
 
-def opencode_action(task: str, workdir: str, read_only: bool, timeout_sec: float, opencode_cmd: str, default_workdir: str) -> str:
-    cwd = _resolve_cwd(workdir, default_workdir)
-    if read_only:
-        task_full = str(task or "").strip()
-        if not task_full:
-            return "任务描述是空的だぜ。"
-        res = _run_opencode(task_full + "（只读：不要修改任何文件，只分析并给出结论/建议）", cwd, timeout_sec, opencode_cmd)
-        _audit("opencode", "exec", task_full[:200], cwd, res["rc"], res["out"][:300])
-        tail = res["out"][:3000] or "(无输出)"
-        return f"opencode 结果：\n{tail}"
-    task_full = str(task or "").strip()
-    if not task_full:
-        return "任务描述是空的だぜ。"
-    task_full += "\n（约束：可以修改代码文件，但禁止执行 git commit / git push；结束后列出改动清单等主人确认）"
-    return propose("opencode", task_full, cwd, {"task": task_full}, ttl_sec=900)
-
-
-def execute_pending(item: Dict[str, Any], timeout_sec: float, opencode_cmd: str) -> str:
+def execute_pending(item: Dict[str, Any], timeout_sec: float) -> str:
     """执行一条已确认待办。"""
     kind = str(item.get("kind") or "shell")
     cmd = str(item.get("cmd") or "")
@@ -276,9 +248,4 @@ def execute_pending(item: Dict[str, Any], timeout_sec: float, opencode_cmd: str)
         res = _run_pwsh(cmd, cwd, 15)
         _audit("shutdown", "exec", cmd, cwd, res["rc"], res["out"][:200])
         return "已执行关机倒计时（可用「取消」中止）だぜ。" if res["rc"] == 0 else f"关机失败：{res['out'][:200]}"
-    if kind == "opencode":
-        res = _run_opencode(cmd, cwd, timeout_sec, opencode_cmd)
-        _audit("opencode", "exec", cmd[:200], cwd, res["rc"], res["out"][:300])
-        tail = res["out"][:3000] or "(无输出)"
-        return f"opencode 结果：\n{tail}"
     return execute_shell(cmd, cwd, timeout_sec, cwd)

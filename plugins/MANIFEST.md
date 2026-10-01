@@ -16,7 +16,7 @@
 | 目录 | plugin id | 版本 | plugin_type | 作用 | 缺了会怎样 |
 |---|---|---|---|---|---|
 | `marisa_desktop/` | `marisa-team.marisa-desktop` | 0.2.0 | adapter | 桌宠 Qt 客户端 ↔ MaiBot 的 WebSocket 适配器：上行以 `desktop` 平台、主人身份注入主链，下行把回复推回桌宠显示与播音 | **桌宠直接起不来**：`run_pet.py` 在 import 阶段就硬加载 `plugins/marisa_desktop/core/`，缺 `core/__init__.py` 会 `sys.path` 抢占后崩在导入期 |
-| `marisa_gate/` | `marisa-team.marisa-gate` | 0.2.0 | normal | 入口门控（私聊仅主人放行、群消息需 @ 或叫出「魔理沙/Marisa」）、给消息打说话人标记、跨端好感度单一事实源、`/截图`、远程终端家族（`/终端`、`/关闭电脑`、`/取消关机`、`/opencode`） | QQ 侧门控失效（未授权消息不再被吞掉），`/截图` 与远程终端指令全部消失 |
+| `marisa_gate/` | `marisa-team.marisa-gate` | 0.2.0 | normal | 入口门控（私聊仅主人放行、群消息需 @ 或叫出「魔理沙/Marisa」）、给消息打说话人标记、跨端好感度单一事实源、`/截图`、远程终端家族（`/终端`、`/关闭电脑`、`/取消关机`） | QQ 侧门控失效（未授权消息不再被吞掉），`/截图` 与远程终端指令全部消失 |
 | `marisa_cv/` | `marisa-team.marisa-cv` | 1.0.0 | extension | 本地东方角色识图：工具 `marisa_identify_character` + 指令 `/识图`，由本地分类服务（`service/serve.py`，端口 9881）完成 | `/识图` 与主动识图工具不可用 |
 | `marisa_voice/` | `marisa.voice` | 1.2.0 | extension | 注册 `marisa_say` 工具，让模型自己决定何时用本地 GPT-SoVITS 合成语音说出口 | 语音输出能力消失（纯文字聊天不受影响） |
 | `marisa_dsh/` | `marisa.dsh` | 1.0.0 | extension | DSH 桥：主人用 QQ 远程让 DeepSeek Harness 跑任务（`/dsh <任务>`、`/dsh 继续`），结果回传 | 无法通过 QQ 远程驱动 DSH（其余功能不受影响） |

@@ -245,7 +245,6 @@
 |---|---|---|
 | `marisa_shell` | `command`（必填）、`workdir`（可选，默认 `D:\MarisaBOT`） | 在主人电脑执行 PowerShell/git 等命令；只读命令直跑，其余先提议等「执行」，危险命令直接拒绝 |
 | `marisa_shutdown` | `seconds`、`cancel` | 关机/重启（带倒计时可取消）；仅在主人明确说「关机/重启」时可用 |
-| `marisa_opencode` | `task`（必填）、`workdir`、`read_only` | 通过 `opencode` 执行代码/仓库任务；会话内禁止 commit/push |
 | `marisa_disk_report` | `topic`（可选：大文件 / 重复 / 临时） | 只读体检 |
 | `marisa_project_audit` | — | 只读审查代码仓库 |
 | `marisa_cleanup_plan` | — | 生成清理方案并推送给主人确认，只生成不执行 |
@@ -259,12 +258,12 @@
 **配置（`plugins/marisa_gate/config.toml`）**
 
 - `[rules]`：`group_mode`、`owners`、`groups`、`cooldown_sec`、`seed_favorability`、`fav_chat_cap_per_hour`、`fav_tool_cap_per_hour`、`deepseek_api_key`。
-- `[terminal]`：`enabled`、`confirm_required`、`workdir_default`（`D:\MarisaBOT`）、`timeout_shell_sec`（60.0）、`timeout_opencode_sec`（900.0）、`output_cap_chars`（1500）、`opencode_cmd`（`opencode`）。
+- `[terminal]`：`enabled`、`confirm_required`、`workdir_default`（`D:\MarisaBOT`）、`timeout_shell_sec`（60.0）、`output_cap_chars`（1500）。
 - `[cleanup]`：`roots`（清理扫描根白名单，留空回退桌面/下载/文档）、`project_roots`、`large_file_mb`（200）、`duplicate_mb`（10）、`max_plan_items`（200）、`allow_permanent_delete`（false）、`plan_ttl_sec`（600）、`desktop_organize`（true）、`desktop_min_age_hours`（24）。
 
 **依赖的外部服务 / 端口**
 
-- 本机 PowerShell、关机权限、`PATH` 里的 `opencode` 命令；工作目录默认 `D:\MarisaBOT`。
+- 本机 PowerShell、关机权限；工作目录默认 `D:\MarisaBOT`。
 - 不监听端口。
 
 ## 9. 第一方插件：marisa_voice（魔理沙语音）
@@ -314,7 +313,7 @@
 |---|---|---|---|
 | `marisa_cv` | 9881（识图服务，由它调用） | — | 依赖外部 GPT-SoVITS runtime 的 Python 解释器 |
 | `marisa_desktop` | 8400（自带 WS 网关） | DeepSeek 余额、wttr.in、music.163.com | 网易云客户端（`orpheus://`）、GPT-SoVITS 9880（语音伴读） |
-| `marisa_gate` | — | — | PowerShell、`opencode` CLI |
+| `marisa_gate` | — | — | PowerShell |
 | `marisa_voice` | 9880（调用方，不监听） | — | GPT-SoVITS 服务与 runtime |
 
 各依赖的默认路径、缺失表现与配置方法见 `docs/external-deps.md`。
