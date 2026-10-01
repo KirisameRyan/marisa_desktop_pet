@@ -457,9 +457,12 @@ class MarisaDshPlugin(MaiBotPlugin):
     @Tool(
         "marisa_dsh_task",
         description=(
-            "把一件事交给 DSH（DeepSeek Harness）在本机执行并拿回结果——用于远程更新、改配置、跑迭代。"
-            "read_only=true 时会在任务里附上「只读、不要改动任何文件」的约束（默认如此）。"
-            "整段任务会阻塞到 DSH 跑完（可能几分钟），所以只在主人明确要求远程操作 DSH 时调用。"
+            "把一件需要在本机实际动手的事交给 DSH（DeepSeek Harness）执行，主人不在电脑前时用它远程干活。"
+            "适用：更新/安装插件、改配置、在工作区里新建或整理文件与目录、跑一次迭代、排查报错、"
+            "「帮我把某个文件夹加进工作区」这类要在电脑上真的动手的请求。"
+            "任务会转到后台执行，结果**直接发到这个会话**；本工具立刻返回「已提交」，"
+            "所以在结果到达之前不要告诉主人任务已经完成。"
+            "read_only=true（默认）会在任务里附加「不要改动任何文件」的约束；主人明确要求改动时才传 false。"
         ),
         parameters=[
             ToolParameterInfo(name="task", param_type=ToolParamType.STRING, description="要交给 DSH 的任务描述", required=True),
@@ -478,10 +481,29 @@ class MarisaDshPlugin(MaiBotPlugin):
         if not body:
             return {"success": False, "content": "要交给 DSH 的任务是空的だぜ。"}
 
+        # 交给后台跑：工具本身必须立刻返回。DSH 动辄几分钟，阻塞在这里会把整个 Planner 卡住，
+        # 所以结果由后台任务直接推回会话，而不是等在这条工具调用里。
+        stream_id = str(kwargs.get("stream_id") or "")
+        if not stream_id:
+            return {
+                "success": False,
+                "content": "拿不到会话上下文，没法把结果回推；请在 QQ 里直接用 /dsh <任务>。",
+            }
+
+        platform = str(kwargs.get("platform") or "")
+        user_id = str(kwargs.get("user_id") or "")
+        session_key = f"{platform}:{kwargs.get('chat_id') or kwargs.get('group_id') or user_id or '?'}"
         effective_read_only = bool(read_only) and bool(dsh.read_only_by_default)
         final_task = body if not effective_read_only else f"{body}\n\n（只读：不要修改任何文件，只分析并给出结论与建议。）"
-        result = await self._run(final_task)
-        return {"success": result.get("rc") == 0, "content": self._format_result(final_task, result)}
+
+        asyncio.create_task(self._bg_run(final_task, session_key, stream_id, ""))
+        return {
+            "success": True,
+            "content": (
+                f"已经把任务交给 DSH 在后台跑了（{dsh.profile} 档，工作目录 {dsh.workdir}）。"
+                "跑完我会把结果直接发到这个会话——在结果到达之前，不要跟主人说任务已经完成。"
+            ),
+        }
 
     # ───────────────────────── 命令（仅主人） ─────────────────────────
 
@@ -523,7 +545,8 @@ class MarisaDshPlugin(MaiBotPlugin):
                     "· /dsh 继续 <补充> —— 接续上一次 DSH 会话继续改\n"
                     "· /dsh 状态 —— 看桥和 CLI 的状态\n"
                     "· /dsh 会话 —— 看当前记着的会话号\n"
-                    "· /dsh 忘记 —— 丢掉当前会话号（下次开新会话）",
+                    "· /dsh 忘记 —— 丢掉当前会话号（下次开新会话）\n"
+                    f"当前跑在 {dsh.profile} 档，工作目录 {dsh.workdir}",
                     stream_id,
                 )
             return True, "", True
