@@ -1,9 +1,9 @@
 [plugin]
 enabled = true
-config_version = "1.0.0"
+config_version = "1.1.0"
 
 # DSH 桥：把 DeepSeek Harness 接到魔理沙身上，用 QQ 远程驱动它干活。
-# 走的是 DSH 自带的一次性任务入口：dsh --profile <档> headless --json <任务>
+# 走的是 DSH 自带的任务入口：dsh --profile <档> headless --json <任务>
 [dsh]
 enabled = true
 # DSH CLI 启动器。默认是 DeepSeek Harness 安装目录里的那个；装到别处就改这里。
@@ -13,19 +13,39 @@ cli_path = "D:\\deepseek_harness\\resources\\runtime\\cli\\bin\\dsh.cmd"
 profile = "headless"
 # 任务的工作目录：DSH 会在 cwd 下操作文件，所以默认就是本工程根目录。
 workdir = "D:\\MarisaBOT"
-# 单次任务超时（秒）。DSH 真干活可能很久，别设太小。
-timeout_sec = 900.0
-# 回传 QQ 的输出上限（字符）。超出只保留头尾，完整输出落审计日志。
+# 单轮任务超时（秒）。DSH 真干活可能很久，别设太小。
+timeout_sec = 1800.0
+# 回传的最终回答上限（字符）。超出只保留头尾，完整事件流落 data/marisa/dsh_runs/。
 max_output_chars = 1800
 # 是否把「让 DSH 跑任务」暴露成 LLM 可见的工具（关掉后只有主人的 /dsh 能用）。
 allow_task_tool = true
-# 工具调用默认按只读下发（任务描述里附加"只读"约束）；主人用 /dsh 时不受此限。
+# 工具调用默认按只读下发（任务描述里附加"只读"约束）；主人用 /dsh 或对话模式时不受此限。
 read_only_by_default = true
 
+# 过程可视化：把 DSH 的执行过程实时推回聊天，让你看得见它在干什么。
+# 事件来源是 --json 的 NDJSON 实时流：tool_call / tool_result / thinking / text / final。
+[stream]
+enabled = true
+# 推「它调用了什么工具、去干什么」——这是"看得见"的主干。
+show_tool_calls = true
+# 推工具返回结果。关掉后仍然会推**失败**的结果（错误不许被配置静默掉）。
+show_tool_results = true
+# 推模型的推理过程。内容比较啰嗦，默认关。
+show_thinking = false
+# 每轮最多推多少条过程消息，超出只在最终回执里说明省略了多少条。
+max_messages = 25
+
+# 对话模式：/dsh 开始 之后，主人直接发普通消息就是在跟 DSH 说话，一轮一轮改到满意。
+# 走 chat.receive.before_process 钩子（LATE 顺序，让 marisa_gate 的门控先跑）。
+[chat]
+enabled = true
+# 多久没说话自动退出对话模式（分钟）。设 0 表示永不自动退出。
+idle_timeout_min = 30.0
+
 [session]
-# 是否保留每个会话的 sessionId，让「/dsh 继续」能接续同一次 DSH 会话做迭代。
+# 是否保留每个会话的 sessionId，让后续轮次接续同一次 DSH 会话。
 keep = true
-# 最多记多少条（按最近使用淘汰）。
+# 最多记多少条（对话模式中的记录优先保留，其余按最近使用淘汰）。
 max_entries = 50
 
 [rules]
