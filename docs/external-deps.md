@@ -59,7 +59,7 @@
    - `ref_audio_path` / `prompt_text` / `prompt_lang` / `text_lang` / `speed_factor`：音色与语种；
    - `auto_start_api` / `api_start_script` / `api_start_timeout_sec`：是否自动拉起、用哪个脚本；
    - `prewarm`：是否在宿主启动时预热。
-2. 语音策略在 `[voice]`：`enabled`、`min_chars`（默认 3）、`max_chars`（默认 60）、`send_mode`（默认 `file`，可选 `base64`）、`cooldown_sec`（默认 `30.0`）、`use_hint` / `length_hint`（会拼进工具描述，**改完需热重载插件**）。
+2. 语音策略在 `[voice]`：`enabled`、`min_chars`（默认 3）、`max_chars`（默认 60）、`send_mode`（默认 `base64`；`file` 只发本地路径，**协议端容器化后必失败**，见 `deploy/qq-pmhq/README.md` 的「媒体路径陷阱」）、`cooldown_sec`（默认 `30.0`）、`use_hint` / `length_hint`（会拼进工具描述，**改完需热重载插件**）。
 3. 桌宠侧独立配置：桌宠 `config.json` 的 `gpt_sovits_api_url`；桌宠与插件共用同一个日志和启动锁，避免重复拉起。
 
 ## 2. 本地识图服务（默认 9881）

@@ -19,6 +19,8 @@
 
 ## 细节
 
+- 修复语音发送失败：`plugins/marisa_voice` 的 `[voice] send_mode` 由 `file` 改为 `base64`（代码默认值、字段说明、配置与两处文档同步）。协议端换成容器化的 LLBot 后，`file` 模式发出的本地路径会被适配器补成 `file://D:\…`，LLBot 在容器里找不到该路径并抛「路径不存在」，机器人表现为回一句「语音发送失败了……」。该默认在 NapCat 与宿主同机时成立，换协议端后不再成立。
+- `deploy/qq-pmhq/README.md` 新增「媒体路径陷阱」一节：列出 base64 / http / file 三种媒体引用在容器化协议端下的行为差异，并给出图片、视频、`file` 组件等同类问题的排查方法。
 - 新增 `deploy/qq-pmhq/`：`Dockerfile.pmhq`、`docker-compose.yml`、`prepare-config.ps1`、`README.md`、`bypass/`（5 个 C 源文件 + PROVENANCE）。
 - `start_all.ps1` / `stop_all.ps1`：QQ 侧改为容器生命周期（`docker compose up -d --build` / `down`）。**不要再按 3001/3080 端口杀进程**——那是 Docker 的端口代理，杀掉会打坏 Docker 网络而容器仍在运行。
 - `deploy/qq-pmhq/prepare-config.ps1` 必须存为 UTF-8 **带 BOM**：Windows PowerShell 5.1 对无 BOM 脚本按 ANSI 解析，中文注释会直接导致语法错误（仓库里既有 `.ps1` 都是带 BOM 的）。

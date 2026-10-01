@@ -102,6 +102,39 @@ docker compose down -v            # 停并删卷（会丢登录态，慎用）
 
 **未验证的**：登录后的实际消息收发（需要真实扫码）。首次部署后请跑一次群聊/私聊确认。
 
+## ⚠ 媒体路径陷阱（换协议端后最容易踩的坑）
+
+协议端从"与宿主同机的 NapCat"换成"容器里的 LLBot"之后，语义少了一条：
+**协议端再也读不到宿主机的文件路径。**
+
+LLBot 对媒体引用的判定（`checkUriType` + `uri2local`，见容器内 `/app/llbot/llbot.js`）：
+
+| 引用形式 | LLBot 行为 |
+|---|---|
+| `base64://<数据>` | 解码后写入容器内临时文件 ✅ **不依赖宿主机** |
+| `http(s)://…` | 由容器自行下载 ✅ |
+| `file://D:\…` 或裸 Windows 路径 | `fs.existsSync` 检查 → 容器里不存在 → **抛「路径不存在」** ❌ |
+
+出错时的日志形态：
+
+```
+[E] onebot11-adapter 发生错误 Error: 路径不存在
+    at handleOb11RichMedia (/app/src/onebot11/transform/message/outgoing.ts:318:11)
+```
+
+**已经因此踩过的坑**：`plugins/marisa_voice` 的 `[voice] send_mode` 原默认是 `file`，
+它把 wav 的**本地路径**当 URL 交给协议端（适配器的 `_normalize_file_reference` 会补成 `file://D:\…`），
+NapCat 与宿主同机时没问题，换成容器化 LLBot 后必失败——机器人表现为回一句「语音发送失败了……」。
+现已把代码默认值与配置都改为 `base64`。
+
+**排查同类问题的通用做法**：只要某类消息带"本地文件"，先问一句"协议端在哪儿读这个文件"。
+
+- **图片 / 表情**：MaiBot 侧本来就以内联 base64 下发（适配器 `_build_image_segments` 只认
+  `binary_data_base64`），容器化后依然安全；
+- **语音 / 视频**：适配器优先用内联 base64，**没有内联时才会退化成路径**——不要让它们退化；
+- **显式以 `voiceurl` / `imageurl` / `videourl` / `file` 形式发送的**：天生就是路径或 URL，
+  配本地路径必炸。要么改成内联形式，要么给一个容器能访问的 http URL。
+
 ## 排障
 
 | 现象 | 处理 |

@@ -183,9 +183,9 @@ class VoiceConfig(PluginConfigBase):
         description="同一人两次 /语音 的最小间隔（秒），0=不限制；防止群友刷合成队列",
         json_schema_extra={"depends_on": "enabled", "depends_value": True},
     )
-    send_mode: Literal["file", "base64"] = Field(
-        default="file",
-        description="file=发文件路径（最稳，但不写入对话历史）；base64=发语音组件（会写进历史，上下文更完整）",
+    send_mode: Literal["base64", "file"] = Field(
+        default="base64",
+        description="base64=内联音频数据（协议端无需访问本机文件，会写进对话历史）；file=只发本地路径，仅当协议端与本机共享文件系统时可用，容器化协议端会报「路径不存在」",
         json_schema_extra={"depends_on": "enabled", "depends_value": True},
     )
     use_hint: str = Field(
@@ -504,8 +504,11 @@ class MarisaVoicePlugin(MaiBotPlugin):
                     maisaka_source_kind="guided_reply",
                 )
             )
-        # 默认走文件路径：发送最稳。但 voiceurl 组件在历史里会被渲染成 [voiceurl消息]，
-        # 所以不同步进历史——模型对"我说过什么"的认知由工具结果提供。
+        # 非 base64 走 voiceurl + 本地路径：这条只有在协议端与本机共享文件系统时才成立
+        # （历史上 NapCat 与宿主同机，所以当时"最稳"）。协议端一旦容器化，它拿到的是
+        # file://D:\... 这样的宿主机路径，会直接报「路径不存在」——所以默认已是 base64。
+        # voiceurl 组件在历史里会被渲染成 [voiceurl消息]，因此不同步进历史：
+        # 模型对"我说过什么"的认知由工具结果提供。
         return bool(await self.ctx.send.custom("voiceurl", {"url": voice_path}, stream_id))
 
     # ───────── 语音合成 ─────────

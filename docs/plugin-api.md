@@ -299,7 +299,7 @@
 
 **配置要点**
 
-- `[voice]`：`enabled`、`min_chars`（3）、`max_chars`（60）、`send_mode`（`file` 默认；`base64` 会写进对话历史）、`cooldown_sec`（30.0）、`use_hint` / `length_hint`（拼进工具描述，改后需热重载）。
+- `[voice]`：`enabled`、`min_chars`（3）、`max_chars`（60）、`send_mode`（`base64` 默认，内联音频、协议端无需读本机文件且会写进对话历史；`file` 只发本地路径，仅当协议端与本机同文件系统时可用）、`cooldown_sec`（30.0）、`use_hint` / `length_hint`（拼进工具描述，改后需热重载）。
 - `[service]`：`api_url`（`http://127.0.0.1:9880`）、`ref_audio_path`、`prompt_text`、`prompt_lang`、`text_lang`、`speed_factor`、`synthesize_timeout_sec`（45.0）、`auto_start_api`、`api_start_script`、`api_start_timeout_sec`（180.0）、`prewarm`。
 
 **依赖的外部服务 / 端口**
