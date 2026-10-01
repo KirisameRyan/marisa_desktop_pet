@@ -1,0 +1,33 @@
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+# DSH 桥：把 DeepSeek Harness 接到魔理沙身上，用 QQ 远程驱动它干活。
+# 走的是 DSH 自带的一次性任务入口：dsh --profile <档> headless --json <任务>
+[dsh]
+enabled = true
+# DSH CLI 启动器。默认是 DeepSeek Harness 安装目录里的那个；装到别处就改这里。
+cli_path = "D:\\deepseek_harness\\resources\\runtime\\cli\\bin\\dsh.cmd"
+# 用哪个配置档跑任务。headless 是一次性任务档；它的 cordis.patch.yml 里必须配好模型 provider，
+# 否则会因为缺 API key 直接报 MISSING_CREDENTIAL（本机已配成与 desktop 一致的账号登录）。
+profile = "headless"
+# 任务的工作目录：DSH 会在 cwd 下操作文件，所以默认就是本工程根目录。
+workdir = "D:\\MarisaBOT"
+# 单次任务超时（秒）。DSH 真干活可能很久，别设太小。
+timeout_sec = 900.0
+# 回传 QQ 的输出上限（字符）。超出只保留头尾，完整输出落审计日志。
+max_output_chars = 1800
+# 是否把「让 DSH 跑任务」暴露成 LLM 可见的工具（关掉后只有主人的 /dsh 能用）。
+allow_task_tool = true
+# 工具调用默认按只读下发（任务描述里附加"只读"约束）；主人用 /dsh 时不受此限。
+read_only_by_default = true
+
+[session]
+# 是否保留每个会话的 sessionId，让「/dsh 继续」能接续同一次 DSH 会话做迭代。
+keep = true
+# 最多记多少条（按最近使用淘汰）。
+max_entries = 50
+
+[rules]
+# 主人 QQ 号；运行时优先取宿主 plugin.permission 的 qq 名单，此项仅作回退。
+owners = ["3895418161"]

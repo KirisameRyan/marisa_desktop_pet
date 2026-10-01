@@ -19,6 +19,7 @@
 | `marisa_gate/` | `marisa-team.marisa-gate` | 0.2.0 | normal | 入口门控（私聊仅主人放行、群消息需 @ 或叫出「魔理沙/Marisa」）、给消息打说话人标记、跨端好感度单一事实源、`/截图`、远程终端家族（`/终端`、`/关闭电脑`、`/取消关机`、`/opencode`） | QQ 侧门控失效（未授权消息不再被吞掉），`/截图` 与远程终端指令全部消失 |
 | `marisa_cv/` | `marisa-team.marisa-cv` | 1.0.0 | extension | 本地东方角色识图：工具 `marisa_identify_character` + 指令 `/识图`，由本地分类服务（`service/serve.py`，端口 9881）完成 | `/识图` 与主动识图工具不可用 |
 | `marisa_voice/` | `marisa.voice` | 1.2.0 | extension | 注册 `marisa_say` 工具，让模型自己决定何时用本地 GPT-SoVITS 合成语音说出口 | 语音输出能力消失（纯文字聊天不受影响） |
+| `marisa_dsh/` | `marisa.dsh` | 1.0.0 | extension | DSH 桥：主人用 QQ 远程让 DeepSeek Harness 跑任务（`/dsh <任务>`、`/dsh 继续`），结果回传 | 无法通过 QQ 远程驱动 DSH（其余功能不受影响） |
 
 `hello_world_plugin/` 是官方示例插件，保留入库，运行时可不要。
 

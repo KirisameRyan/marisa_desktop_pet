@@ -7,7 +7,14 @@
 - QQ 侧由 NapCat 换成 **PMHQ + LLBot**，部署在 `deploy/qq-pmhq/`（Docker 双容器）：LLBot 对外提供 OneBot 11，PMHQ 负责把 QQ 客户端注入起来。
 - PMHQ 会要求把 QQ 相关信息与环境数据上传到 Luckylillia 服务端做账号认证绑定。本方案用 pmhq-bypass（源码收录在 `deploy/qq-pmhq/bypass/`，含逐行审计与哈希）把这一步就地截断成本地伪造应答，认证不再出本机。容器内实测：无任何指向认证服务端的连接，伪造服务只绑回环。
 - 适配器**零改动**：`MaiBot-Napcat-Adapter` 连的仍是 `127.0.0.1:3001`，与 LLBot 的 OneBot 11 正向 WS 默认端口一致；新增 `deploy/qq-pmhq/prepare-config.ps1` 从适配器配置推导 LLBot 配置，端口与 token 两端天然一致。
-- 版本锁死：bypass 的字节补丁只对 pmhq 8.1.1 生效，`Dockerfile.pmhq` 固定基础镜像并在构建期强制校验补丁落盘，避免"看起来起来了其实还在走联网认证"。
+- 版本锁死：bypass 的字节补丁只对 pmhq 8.1.1 生效，`Dockerfile.pmhq` 固定基础镜像并在构建期强制校验补丁落盘，避免"看起来起来了其实还在走网络认证"。
+
+## DSH 桥（新）
+
+- 新增第一方插件 `plugins/marisa_dsh`（`marisa.dsh`）：把 DeepSeek Harness 接到魔理沙身上，主人可以用 QQ 远程驱动它干活——提交任务、拿回结果、接续会话做迭代。
+- 指令：`/dsh <任务>`（后台跑、完成后把结果发回群里）、`/dsh 继续 <补充>`（用 `--session-id` 接续同一次 DSH 会话）、`/dsh 状态`、`/dsh 会话`、`/dsh 忘记`；另有 `marisa_dsh_task` / `marisa_dsh_status` 两个工具供模型主动调用（工具默认按只读下发）。
+- 实现走 DSH 自带的一次性任务入口 `dsh --profile <档> headless --json <任务>`：取 `final.text` 作回答、`session.sessionId` 作可接续会话号、`status.usage` 报 token 用量。任务以参数列表交给子进程（不拼 shell 字符串），`.cmd` 经 `cmd.exe /c` 调用。
+- 命令一律 `permission="operator"`，工具再做一次运行时主人校验；每次执行写审计日志 `data/marisa/dsh_audit.log` 并把完整输出落盘 `data/marisa/dsh_runs/`，QQ 只回摘要。
 
 ## 仓库与工程
 
@@ -19,6 +26,7 @@
 
 ## 细节
 
+- 移除「提醒」功能：删除 `plugins/marisa_desktop/native/reminders.py`，以及 `marisa_desktop` 里与之相关的三个工具（`marisa_reminder_add/list/delete`）、三条指令（`/提醒`、`/提醒列表`、`/提醒删除`）、每分钟对表的后台循环、帮助菜单的「提醒」分类与条目。删除后插件内相关引用为 0，`py_compile` 通过。
 - 修复语音发送失败：`plugins/marisa_voice` 的 `[voice] send_mode` 由 `file` 改为 `base64`（代码默认值、字段说明、配置与两处文档同步）。协议端换成容器化的 LLBot 后，`file` 模式发出的本地路径会被适配器补成 `file://D:\…`，LLBot 在容器里找不到该路径并抛「路径不存在」，机器人表现为回一句「语音发送失败了……」。该默认在 NapCat 与宿主同机时成立，换协议端后不再成立。
 - `deploy/qq-pmhq/README.md` 新增「媒体路径陷阱」一节：列出 base64 / http / file 三种媒体引用在容器化协议端下的行为差异，并给出图片、视频、`file` 组件等同类问题的排查方法。
 - 新增 `deploy/qq-pmhq/`：`Dockerfile.pmhq`、`docker-compose.yml`、`prepare-config.ps1`、`README.md`、`bypass/`（5 个 C 源文件 + PROVENANCE）。

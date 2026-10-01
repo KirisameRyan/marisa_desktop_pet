@@ -1,0 +1,39 @@
+{
+  "manifest_version": 2,
+  "id": "marisa.dsh",
+  "version": "1.0.0",
+  "name": "魔理沙 DSH 桥",
+  "description": "把 DeepSeek Harness 接到魔理沙身上：在 QQ 里让 DSH 跑任务（更新、改配置、迭代），结果回传，并支持会话接续。",
+  "author": {
+    "name": "Marisa Desktop Team",
+    "url": "https://github.com/"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/",
+    "homepage": "https://github.com/",
+    "documentation": "https://github.com/",
+    "issues": "https://github.com/"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "config.get"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "plugin_type": "extension"
+}

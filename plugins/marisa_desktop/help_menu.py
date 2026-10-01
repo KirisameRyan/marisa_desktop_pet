@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Tuple
 from maibot_sdk.components import collect_components
 
 # 分类展示顺序；未列入的命令统一进入「其他」，保证新增命令不会漏出菜单
-CATEGORY_ORDER: List[str] = ["总览", "音乐", "桌面", "查询", "提醒", "账号", "其他"]
+CATEGORY_ORDER: List[str] = ["总览", "音乐", "桌面", "查询", "账号", "其他"]
 
 # 命令名 -> 分类（仅影响展示分组，不影响注册与鉴权）
 COMMAND_CATEGORIES: Dict[str, str] = {
@@ -32,9 +32,6 @@ COMMAND_CATEGORIES: Dict[str, str] = {
     "marisa_favor": "查询",
     "marisa_balance": "查询",
     "marisa_uptime": "查询",
-    "marisa_reminder_add": "提醒",
-    "marisa_reminder_list": "提醒",
-    "marisa_reminder_del": "提醒",
     "d_ncm_login": "账号",
 }
 

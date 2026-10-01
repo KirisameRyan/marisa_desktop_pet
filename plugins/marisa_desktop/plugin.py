@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -79,7 +79,6 @@ except Exception as _e:
     ACTIONS = None
 
 from windows import foreground_app_info  # noqa: E402  （native 目录已在 sys.path 上）
-from reminders import REMINDER_STORE  # noqa: E402
 
 try:
     from aiohttp import WSMsgType, web
@@ -229,7 +228,6 @@ class MarisaDesktopPlugin(MaiBotPlugin):
         self._pet_proc: Optional[subprocess.Popen] = None
         self._launcher_checked_initial: bool = False
         self._patrol_task: Optional[asyncio.Task] = None
-        self._reminder_task: Optional[asyncio.Task] = None
         self._patrol: Any = None
 
     # ───────────────────────── 生命周期 ─────────────────────────
@@ -276,8 +274,6 @@ class MarisaDesktopPlugin(MaiBotPlugin):
                 self.config.patrol.interval_seconds,
             )
 
-        self._reminder_task = asyncio.create_task(self._reminder_loop())
-
     async def _start_site_with_retry(self, attempts: int = 6, delay: float = 2.0) -> bool:
         """启动网关监听，端口被上一个实例短暂占用时退避重试。
 
@@ -305,25 +301,6 @@ class MarisaDesktopPlugin(MaiBotPlugin):
                 )
                 await asyncio.sleep(delay)
         return False
-
-    # ───────────────────────── 到点提醒 ─────────────────────────
-
-    async def _reminder_loop(self) -> None:
-        """每分钟对一次表，把到点的提醒推给桌宠播报。"""
-
-        await asyncio.sleep(20.0)
-        while True:
-            try:
-                for item in REMINDER_STORE.due_now():
-                    text = str(item.get("text") or "").strip()
-                    if text:
-                        await self._push_to_pet(f"⏰ 提醒时间到：{text}")
-                        self.ctx.logger.info("[marisa_desktop] 播报提醒: %s", text)
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                self.ctx.logger.info("[marisa_desktop] 提醒调度异常: %s", exc)
-            await asyncio.sleep(60.0)
 
     # ───────────────────────── 主动巡检 ─────────────────────────
 
@@ -456,13 +433,6 @@ class MarisaDesktopPlugin(MaiBotPlugin):
 
     async def on_unload(self) -> None:
         """关闭 WS 服务与桌宠守护。"""
-        if self._reminder_task:
-            self._reminder_task.cancel()
-            try:
-                await self._reminder_task
-            except Exception:
-                pass
-            self._reminder_task = None
         if self._patrol_task:
             self._patrol_task.cancel()
             try:
@@ -1241,74 +1211,6 @@ class MarisaDesktopPlugin(MaiBotPlugin):
         if ACTIONS:
             return ACTIONS.get_clipboard()
         return self._no_actions_text()
-    # ---------------- 工具：提醒（仅主人） ----------------
-
-    @Tool(
-        "marisa_reminder_add",
-        description="为主人在电脑上设置提醒（如 30 分钟后喝水 / 每天 8:00 起床）。",
-        parameters=[
-            ToolParameterInfo(name="text", param_type=ToolParamType.STRING, description="提醒内容", required=True),
-            ToolParameterInfo(name="when", param_type=ToolParamType.STRING, description='触发时间："30分钟" / "2小时" / "每天8:00" / "14:30"', required=True),
-        ],
-    )
-    async def tool_reminder_add(self, text: str = "", when: str = "", **kwargs: Any) -> str:
-        if not await self._caller_authorized(str(kwargs.get("platform") or ""), str(kwargs.get("user_id") or "")):
-            return OWNER_DENY_TEXT
-        del kwargs
-        t = str(text or "").strip()
-        w = str(when or "").strip()
-        if not t or not w:
-            return "提醒需要内容和时间だぜ。"
-        m_daily = re.search(r"每天\s*(\d{1,2})[:：](\d{1,2})", w)
-        m_clock = re.search(r"(?:^|[^\d])(\d{1,2})[:：](\d{1,2})", w)
-        m_min = re.search(r"(\d{1,3})\s*分钟", w)
-        m_hour = re.search(r"(\d{1,2})\s*个小时?", w)
-        if m_daily:
-            hm = f"{int(m_daily.group(1)):02d}:{int(m_daily.group(2)):02d}"
-            REMINDER_STORE.add(t, hm, "daily")
-            return f"好，以后每天 {hm} 都会提醒主人：「{t}」！"
-        if m_clock:
-            hm = f"{int(m_clock.group(1)):02d}:{int(m_clock.group(2)):02d}"
-            REMINDER_STORE.add(t, hm, "once")
-            return f"好，{hm} 会提醒主人：「{t}」！"
-        if m_min or m_hour:
-            minutes = int(m_min.group(1)) if m_min else int(m_hour.group(1)) * 60
-            fire_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%H:%M")
-            REMINDER_STORE.add(t, fire_at, "once")
-            return f"好，{minutes} 分钟后（{fire_at}）会提醒主人：「{t}」！"
-        return "提醒时间没看懂だぜ……比如：30分钟 / 2小时 / 每天8:00 / 14:30"
-
-    @Tool("marisa_reminder_list", description="查看主人已设置的提醒列表。")
-    async def tool_reminder_list(self, **kwargs: Any) -> str:
-        if not await self._caller_authorized(str(kwargs.get("platform") or ""), str(kwargs.get("user_id") or "")):
-            return OWNER_DENY_TEXT
-        del kwargs
-        items = REMINDER_STORE.list_reminders()
-        if not items:
-            return "主人还没有设置任何提醒だぜ。"
-        lines = ["⏰ 主人的提醒："]
-        for i, r in enumerate(items, 1):
-            kind = "每天" if r.get("kind") == "daily" else "单次"
-            lines.append(f"{i}. [{kind} {r.get('time')}] {r.get('text')}")
-        return "\n".join(lines)
-
-    @Tool(
-        "marisa_reminder_delete",
-        description="删除主人某一条提醒。",
-        parameters=[ToolParameterInfo(name="index", param_type=ToolParamType.INTEGER, description="提醒编号（从 1 开始，见提醒列表）", required=True)],
-    )
-    async def tool_reminder_delete(self, index: int = 0, **kwargs: Any) -> str:
-        if not await self._caller_authorized(str(kwargs.get("platform") or ""), str(kwargs.get("user_id") or "")):
-            return OWNER_DENY_TEXT
-        del kwargs
-        items = REMINDER_STORE.list_reminders()
-        if not items:
-            return "没有提醒可以删だぜ。"
-        if not (1 <= int(index) <= len(items)):
-            return f"编号超出范围だぜ，现在一共 {len(items)} 条。"
-        target = items[int(index) - 1]
-        REMINDER_STORE.remove(target.get("id"))
-        return f"已删掉提醒「{target.get('text')}」だぜ。"
     # ---------------- 工具：仅主人 - 信息/系统 ----------------
 
     @Tool("marisa_favor", description="查询魔理沙与主人的好感度/羁绊。主人询问时使用。")
@@ -1584,24 +1486,6 @@ class MarisaDesktopPlugin(MaiBotPlugin):
             if ACTIONS:
                 return ACTIONS.get_clipboard()
             return self._no_actions_text()
-        if cmd == "提醒":
-            m = re.search(r"(\d{1,3})\s*(?:分钟)?", args or "")
-            if not m:
-                return "格式：/提醒 30 喝水"
-            body = re.sub(r"^\d{1,3}\s*(?:分钟)?\s*", "", args)
-            minutes = int(m.group(1))
-            fire_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%H:%M")
-            REMINDER_STORE.add(body or "提醒", fire_at, "once")
-            return f"好，{minutes} 分钟后（{fire_at}）会提醒主人：「{body or '提醒'}」！"
-        if cmd == "提醒列表":
-            return await self.tool_reminder_list(platform=platform, user_id=user_id)
-        if cmd == "提醒删除":
-            m = re.search(r"(\d+)", args or "")
-            if not m:
-                return "格式：/提醒删除 1"
-            return await self.tool_reminder_delete(
-                index=int(m.group(1)), platform=platform, user_id=user_id
-            )
         if cmd in ("网易云登录", "扫码登录"):
             return (await self._ncm_login_send(stream_id)) or "二维码图片已发给主人，用手机网易云 App 扫一扫だぜ♪"
         if cmd in ("截图", "截屏"):
@@ -1700,18 +1584,6 @@ class MarisaDesktopPlugin(MaiBotPlugin):
     @Command("marisa_clipboard", description="读取电脑剪贴板：/剪贴板（仅管理员）", pattern=cmd_pattern(r"/剪贴板(?:\s+[\s\S]*)?\s*$"), permission="operator")
     async def cmd_clipboard(self, **kwargs: Any) -> tuple:
         return await self._dispatch_qq_command(kwargs, ("剪贴板",))
-
-    @Command("marisa_reminder_add", description="设置提醒：/提醒 <分钟后> <内容>（仅管理员）", pattern=cmd_pattern(r"/提醒(?:\s+[\s\S]+)?\s*$"), permission="operator")
-    async def cmd_reminder_add(self, **kwargs: Any) -> tuple:
-        return await self._dispatch_qq_command(kwargs, ("提醒",))
-
-    @Command("marisa_reminder_list", description="查看提醒列表：/提醒列表（仅管理员）", pattern=cmd_pattern(r"/提醒列表(?:\s+[\s\S]*)?\s*$"), permission="operator")
-    async def cmd_reminder_list(self, **kwargs: Any) -> tuple:
-        return await self._dispatch_qq_command(kwargs, ("提醒列表",))
-
-    @Command("marisa_reminder_del", description="删除一条提醒：/提醒删除 <编号>（仅管理员）", pattern=cmd_pattern(r"/提醒删除(?:\s+[\s\S]+)?\s*$"), permission="operator")
-    async def cmd_reminder_del(self, **kwargs: Any) -> tuple:
-        return await self._dispatch_qq_command(kwargs, ("提醒删除",))
 
     @Command("marisa_favor", description="查看与魔理沙的好感度：/好感度（仅管理员）", pattern=cmd_pattern(r"/好感度(?:\s+[\s\S]*)?\s*$"), permission="operator")
     async def cmd_favor(self, **kwargs: Any) -> tuple:
