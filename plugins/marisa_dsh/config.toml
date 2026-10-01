@@ -22,18 +22,24 @@ allow_task_tool = true
 # 工具调用默认按只读下发（任务描述里附加"只读"约束）；主人用 /dsh 或对话模式时不受此限。
 read_only_by_default = true
 
-# 过程可视化：把 DSH 的执行过程实时推回聊天，让你看得见它在干什么。
+# 过程可视化：把 DSH 的执行过程推回聊天。
+# 默认 digest——短任务一条过程消息都不发，长任务每 120 秒最多一条进度。
 # 事件来源是 --json 的 NDJSON 实时流：tool_call / tool_result / thinking / text / final。
+#
+# 注意：只有**主人主动发起**的运行（/dsh 与对话模式）才会推过程；
+# 模型自己调 marisa_dsh_task 时一律安静，只回最终结果（曾经因为默认全开把群刷屏）。
 [stream]
-enabled = true
-# 推「它调用了什么工具、去干什么」——这是"看得见"的主干。
-show_tool_calls = true
-# 推工具返回结果。关掉后仍然会推**失败**的结果（错误不许被配置静默掉）。
-show_tool_results = true
-# 推模型的推理过程。内容比较啰嗦，默认关。
+# off   = 只回最终回答
+# digest= 每 digest_interval_sec 秒最多一条进度（推荐，不刷屏）
+# full  = 每次工具调用各一条（要盯着看时才用，会刷屏）
+mode = "digest"
+# digest 模式下两条进度之间至少隔多少秒。任务比这短就一条都不会发。
+digest_interval_sec = 120.0
+# 下面两项只在 full 模式下生效。失败的工具结果在任何模式下都会推。
+show_tool_results = false
 show_thinking = false
-# 每轮最多推多少条过程消息，超出只在最终回执里说明省略了多少条。
-max_messages = 25
+# 每轮最多推多少条过程消息，超出在最终回执里说明省略了多少条。
+max_messages = 8
 
 # 对话模式：/dsh 开始 之后，主人直接发普通消息就是在跟 DSH 说话，一轮一轮改到满意。
 # 走 chat.receive.before_process 钩子（LATE 顺序，让 marisa_gate 的门控先跑）。

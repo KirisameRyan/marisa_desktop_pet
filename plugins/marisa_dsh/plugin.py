@@ -21,8 +21,16 @@
 {"type":"final","text":"…"}
 ```
 
-所以这里不再只取 ``final.text``，而是**边跑边把工具调用/结果/思考推回 QQ**，让你看得见它
-在干什么；``step_end`` 的 usage 逐轮累加，回执里给出真实开销。
+所以这里不再只取 ``final.text``，而是按 ``[stream] mode`` 决定推多少：
+
+- ``off``：只回最终回答；
+- ``digest``（**默认**）：每 ``digest_interval_sec`` 秒最多一条进度
+  （``⏳ DSH 进行中：N 步 / 用时，最近：工具``）——短任务一条都不发；工具**失败**立即推；
+- ``full``：每次工具调用各推一条（要盯着看时才用，会刷屏）。
+
+**只有主人主动发起的运行才推过程**（``/dsh <任务>`` 与对话模式）；模型自己调
+``marisa_dsh_task`` 时一律安静、只回最终结果——否则模型自作主张的一次调用就能把群刷爆。
+这是踩过的坑：默认全开时，模型自己调了一次工具，过程消息刷了屏。
 
 关于"会话键"：命令侧拿到的 ``stream_id`` 与钩子侧 ``message["session_id"]`` 都是**同一个
 聊天流标识**，两侧统一用它当键，对话模式才能把「/dsh 开始」和随后那条普通消息接到同一条
@@ -48,7 +56,7 @@ import json
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from maibot_sdk import Command, Field, HookHandler, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo, ToolParamType
@@ -166,17 +174,24 @@ class DshSectionConfig(PluginConfigBase):
 
 
 class StreamSectionConfig(PluginConfigBase):
-    """过程可视化：把 DSH 的执行过程实时推回聊天。"""
+    """过程可视化：把 DSH 的执行过程推回聊天。
+
+    默认 ``digest``：短任务不产生任何过程消息，长任务每 ``digest_interval_sec`` 秒
+    最多一条进度。``full`` 会一条工具一条消息（会刷屏），只在想盯着看时开。
+    """
 
     __ui_label__ = "过程可视化"
     __ui_icon__ = "activity"
     __ui_order__ = 2
 
-    enabled: bool = Field(default=True, description="是否把执行过程（工具调用/思考）实时推回聊天")
-    show_tool_calls: bool = Field(default=True, description="推送「它调用了什么工具、干什么」")
-    show_tool_results: bool = Field(default=True, description="推送工具返回结果（关掉后只推失败的）")
-    show_thinking: bool = Field(default=False, description="推送模型的推理过程（比较啰嗦，默认关）")
-    max_messages: int = Field(default=25, description="每轮最多推多少条过程消息，超出只回最终回答")
+    mode: Literal["off", "digest", "full"] = Field(
+        default="digest",
+        description="off=只回最终回答；digest=每 digest_interval_sec 秒最多一条进度（推荐）；full=每次工具调用各一条（会刷屏）",
+    )
+    digest_interval_sec: float = Field(default=120.0, description="digest 模式下两条进度之间至少隔多少秒")
+    show_tool_results: bool = Field(default=False, description="full 模式下是否也推工具的成功返回（失败的始终推）")
+    show_thinking: bool = Field(default=False, description="full 模式下是否推模型的推理过程")
+    max_messages: int = Field(default=8, description="每轮最多推多少条过程消息，超出在回执里说明省略了多少条")
 
 
 class ChatSectionConfig(PluginConfigBase):
@@ -225,13 +240,19 @@ class MarisaDshConfig(PluginConfigBase):
 class _RunState:
     """一次执行的可变状态（回答、会话号、用量、过程消息计数）。"""
 
-    def __init__(self, cap: int) -> None:
+    def __init__(self, cap: int, allow_stream: bool, started: float) -> None:
         self.chunks: List[str] = []
         self.final: str = ""
         self.session_id: str = ""
         self.steps: int = 0
         self.sent: int = 0
         self.suppressed: int = 0
+        self.failures: int = 0
+        # 只有主人主动发起的运行才推过程；模型自己调工具时安静跑
+        self.allow_stream: bool = allow_stream
+        self.started: float = started
+        self.last_digest: float = started
+        self.last_activity: str = ""
         self.cap: int = cap
         self.usage: Dict[str, int] = {
             "inputTokens": 0,
@@ -272,7 +293,7 @@ class MarisaDshPlugin(MaiBotPlugin):
             dsh.profile,
             dsh.workdir,
             "已找到" if cli_ok else f"**找不到（{dsh.cli_path}）**",
-            "开" if self.config.stream.enabled else "关",
+            "开" if self.config.stream.mode != "off" else "关",
             "开" if self.config.chat.enabled else "关",
         )
         if dsh.enabled and not cli_ok:
@@ -296,7 +317,7 @@ class MarisaDshPlugin(MaiBotPlugin):
             "开启" if dsh.enabled else "关闭",
             dsh.profile,
             dsh.timeout_sec,
-            "开" if self.config.stream.enabled else "关",
+            "开" if self.config.stream.mode != "off" else "关",
         )
         if not bool(self.config.session.keep):
             with self._session_lock:
@@ -442,14 +463,26 @@ class MarisaDshPlugin(MaiBotPlugin):
             creationflags=0x08000000,
         )
 
-    async def _run(self, task: str, session_id: str, stream_id: str) -> Dict[str, Any]:
-        """流式跑一轮 DSH：边读事件边把过程推回聊天，最后返回汇总。
+    async def _run(
+        self,
+        task: str,
+        session_id: str,
+        stream_id: str,
+        allow_stream: bool = True,
+    ) -> Dict[str, Any]:
+        """流式跑一轮 DSH：边读事件边按策略推过程，最后返回汇总。
 
         读取放在独立线程里（`for line in proc.stdout` 是阻塞的），通过
         `call_soon_threadsafe` 投进 asyncio 队列——不依赖宿主的 event loop 策略。
+        `allow_stream=False` 用于**模型自己调起**的任务：只收结果，不往群里推进度。
         """
 
-        state = _RunState(cap=max(1, int(self.config.stream.max_messages)))
+        loop = asyncio.get_running_loop()
+        state = _RunState(
+            cap=max(1, int(self.config.stream.max_messages)),
+            allow_stream=allow_stream,
+            started=loop.time(),
+        )
         timeout_sec = float(self.config.dsh.timeout_sec)
         raw_lines: List[str] = []
         timed_out = False
@@ -461,7 +494,6 @@ class MarisaDshPlugin(MaiBotPlugin):
             self._running -= 1
             return {"rc": -2, "answer": "", "session_id": "", "err": f"DSH 起不来：{exc}"}
 
-        loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[str]]" = asyncio.Queue()
 
         def _pump() -> None:
@@ -507,6 +539,7 @@ class MarisaDshPlugin(MaiBotPlugin):
             "steps": state.steps,
             "sent": state.sent,
             "suppressed": state.suppressed,
+            "failures": state.failures,
             "err": "超时，已终止" if timed_out else "",
             "raw": "\n".join(raw_lines),
         }
@@ -514,7 +547,7 @@ class MarisaDshPlugin(MaiBotPlugin):
         return result
 
     async def _handle_event(self, event: Dict[str, Any], state: _RunState, stream_id: str) -> None:
-        """处理一个事件：更新状态 + 按配置把过程推回聊天。"""
+        """处理一个事件：更新状态 + 按 [stream] 策略决定推不推。"""
 
         kind = str(event.get("type") or "")
         if kind == "session":
@@ -534,16 +567,75 @@ class MarisaDshPlugin(MaiBotPlugin):
                 state.steps += 1
                 for name in state.usage:
                     state.usage[name] += int(usage.get(name) or 0)
+            await self._maybe_digest(state, stream_id)
             return
 
-        message = self._render_event(event)
-        if not message or not stream_id or not bool(self.config.stream.enabled):
+        if kind == "tool_call":
+            tool = str(event.get("tool") or "?")
+            detail = _tool_input_brief(event.get("input"))
+            state.last_activity = f"{tool}（{detail}）" if detail else tool
+        elif kind == "tool_result" and str(event.get("status") or "") not in _TOOL_OK_STATUS:
+            state.failures += 1
+
+        await self._emit_process(state, stream_id, self._render_event(event), urgent=self._is_urgent(event))
+
+    async def _emit_process(
+        self,
+        state: _RunState,
+        stream_id: str,
+        text: Optional[str],
+        urgent: bool = False,
+    ) -> None:
+        """按 [stream] mode 决定这条过程消息推不推。
+
+        - off：一条都不推；
+        - digest：只推"出事"的（urgent），正常进度交给 _maybe_digest 定时报；
+        - full：每次工具调用各推一条。
+        """
+
+        if not text or not stream_id or not state.allow_stream:
+            return
+        mode = str(self.config.stream.mode or "digest")
+        if mode == "off":
+            return
+        if mode == "digest" and not urgent:
             return
         if state.sent >= state.cap:
             state.suppressed += 1
             return
         state.sent += 1
-        await self._try_send(stream_id, message)
+        await self._try_send(stream_id, text)
+
+    async def _maybe_digest(self, state: _RunState, stream_id: str) -> None:
+        """digest 模式：距上次进度超过 digest_interval_sec 才再报一条。
+
+        短任务因此一条进度都不会发——这是默认不刷屏的关键。
+        """
+
+        stream = self.config.stream
+        if not stream_id or not state.allow_stream or str(stream.mode or "digest") != "digest":
+            return
+        now = asyncio.get_running_loop().time()
+        if now - state.last_digest < float(stream.digest_interval_sec):
+            return
+        state.last_digest = now
+        if state.sent >= state.cap:
+            state.suppressed += 1
+            return
+        elapsed = int(now - state.started)
+        state.sent += 1
+        await self._try_send(
+            stream_id,
+            f"⏳ DSH 进行中：{state.steps} 步 / {elapsed // 60}分{elapsed % 60}秒，最近：{state.last_activity or '思考中'}",
+        )
+
+    def _is_urgent(self, event: Dict[str, Any]) -> bool:
+        """失败类的工具结果：digest 模式下也要立即推。"""
+
+        return (
+            str(event.get("type") or "") == "tool_result"
+            and str(event.get("status") or "") not in _TOOL_OK_STATUS
+        )
 
     def _render_event(self, event: Dict[str, Any]) -> Optional[str]:
         """把一个事件渲染成一条聊天消息；不推送的类型返回 None。"""
@@ -552,15 +644,13 @@ class MarisaDshPlugin(MaiBotPlugin):
         kind = str(event.get("type") or "")
 
         if kind == "tool_call":
-            if not bool(stream.show_tool_calls):
-                return None
             tool = str(event.get("tool") or "?")
             detail = _tool_input_brief(event.get("input"))
             return f"🔧 {tool}：{detail}" if detail else f"🔧 {tool}"
 
         if kind == "tool_result":
             failed = str(event.get("status") or "") not in _TOOL_OK_STATUS
-            # 失败的工具结果无条件暴露（AGENTS：错误要完整暴露，不许被配置静默掉）
+            # 失败的结果始终渲染（错误不许被配置静默掉）；成功的结果只在 full 模式下渲染
             if not failed and not bool(stream.show_tool_results):
                 return None
             head = "⚠️" if failed else "↳"
@@ -641,8 +731,10 @@ class MarisaDshPlugin(MaiBotPlugin):
             return f"DSH 跑完了但没给出回答，rc={rc}：\n{tail}"
 
         head = f"DSH 干完了（rc={rc}，{steps} 步）：\n{_clip(answer, int(self.config.dsh.max_output_chars))}"
+        if int(result.get("failures") or 0):
+            head += f"\n\n〔其中 {result['failures']} 次工具调用失败，完整事件流见 data/marisa/dsh_runs/〕"
         if int(result.get("suppressed") or 0):
-            head += f"\n\n〔过程消息太多，省略了 {result['suppressed']} 条〕"
+            head += f"\n〔过程消息过多，省略了 {result['suppressed']} 条〕"
         if any(usage.values()):
             head += (
                 f"\n\n〔本轮 tokens：新增 {usage.get('inputTokens', 0)}"
@@ -665,7 +757,7 @@ class MarisaDshPlugin(MaiBotPlugin):
             f"· 配置档：{dsh.profile}",
             f"· 工作目录：{dsh.workdir}",
             f"· 启动器：{cli}（{'存在' if Path(cli).is_file() else '**不存在**'}）",
-            f"· 过程可视化：{'开' if self.config.stream.enabled else '关'}",
+            f"· 过程可视化：{self.config.stream.mode}（digest=每 {self.config.stream.digest_interval_sec:.0f} 秒最多一条）",
             f"· 对话模式：{'开' if self.config.chat.enabled else '关'}",
             f"· 正在跑的任务：{self._running}",
         ]
@@ -708,12 +800,16 @@ class MarisaDshPlugin(MaiBotPlugin):
             }
 
         final_task = self._apply_read_only(body, bool(read_only))
-        asyncio.create_task(self._bg_run(final_task, stream_id, stream_id, self._last_session(stream_id)))
+        # allow_stream=False：模型自己调起的任务**安静跑**，只回最终结果，不往群里推进度。
+        # 踩过的坑：默认全开时，模型自作主张调了一次工具就把群刷屏了。
+        asyncio.create_task(
+            self._bg_run(final_task, stream_id, stream_id, self._last_session(stream_id), allow_stream=False)
+        )
         return {
             "success": True,
             "content": (
-                f"已经把任务交给 DSH 在后台跑了（{dsh.profile} 档，工作目录 {dsh.workdir}），"
-                "执行过程和结果会直接发到这个会话——在结果到达之前，不要跟主人说任务已经完成。"
+                f"已经把任务交给 DSH 在后台跑了（{dsh.profile} 档，工作目录 {dsh.workdir}）。"
+                "结果会直接发到这个会话，过程不会刷屏——在结果到达之前，不要跟主人说任务已经完成。"
             ),
         }
 
@@ -870,14 +966,21 @@ class MarisaDshPlugin(MaiBotPlugin):
             "· /dsh 新 <任务> —— 不管上次，干净地开一次新会话\n"
             "· /dsh 状态 / 会话 / 忘记 —— 看状态 / 看会话号 / 丢掉会话号\n"
             f"当前跑在 {dsh.profile} 档，工作目录 {dsh.workdir}，"
-            f"过程可视化 {'开' if self.config.stream.enabled else '关'}"
+            f"过程可视化 {self.config.stream.mode}"
         )
 
-    async def _bg_run(self, task: str, key: str, stream_id: str, session_id: str) -> None:
-        """后台跑一轮；事件流由 _run 边读边推，这里只负责收尾与记账。"""
+    async def _bg_run(
+        self,
+        task: str,
+        key: str,
+        stream_id: str,
+        session_id: str,
+        allow_stream: bool = True,
+    ) -> None:
+        """后台跑一轮；过程推送由 _run 按策略决定，这里只负责收尾与记账。"""
 
         try:
-            result = await self._run(task, session_id, stream_id)
+            result = await self._run(task, session_id, stream_id, allow_stream=allow_stream)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001

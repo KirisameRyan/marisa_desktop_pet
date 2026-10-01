@@ -13,7 +13,7 @@
 
 - 新增第一方插件 `plugins/marisa_dsh`（`marisa.dsh`）：把 DeepSeek Harness 接到魔理沙身上，主人可以用 QQ 远程驱动它干活——提交任务、拿回结果、接续会话做迭代。
 - 指令：`/dsh 开始`（进入**对话模式**，之后主人直接发普通消息就是在跟 DSH 一轮一轮地说话）、`/dsh 结束`、`/dsh <任务>`（单次任务）、`/dsh 新 <任务>`（另起新会话）、`/dsh 状态` / `会话` / `忘记`；另有 `marisa_dsh_task` / `marisa_dsh_status` 两个工具供模型主动调用（工具默认按只读下发）。
-- **过程可视化**：不再只取最终回答，而是实时读取 `--json` 的 NDJSON 事件流并把过程推回聊天——`tool_call` 显示「调用了什么工具、去干什么」（`🔧 pwsh：List files in current directory`），`tool_result` 显示返回摘要，失败的结果**无条件暴露**（不被配置静默掉），`thinking` 可选推送；`step_end` 的 usage 逐轮累加后给出真实开销。每轮过程消息有条数上限，超出只在回执里说明。
+- **过程可视化**（三档，默认不刷屏）：`[stream] mode = off | digest | full`。`digest`（默认）下短任务**一条进度都不发**，长任务每 `digest_interval_sec`（120s）最多一条「⏳ 进行中：N 步 / 用时，最近：工具」，工具**失败**立即推；`full` 才每次工具调用各推一条。只有**主人主动发起**的运行（`/dsh`、对话模式）才推过程，模型自己调 `marisa_dsh_task` 时一律安静、只回最终结果。
 - 对话模式走 `chat.receive.before_process` 钩子（`BLOCKING` + `LATE`，让 marisa_gate 的门控先跑）：只接管**处于对话模式且发送者是主人**的普通消息，群友发的话原样放回主链，绝不会被当成 DSH 指令；闲置超时自动退出。
 - 子进程 stdout 由独立线程逐行读取后经 `call_soon_threadsafe` 投进 asyncio 队列，不依赖宿主的事件循环策略；stderr 并入 stdout，靠「不以 `{` 开头就跳过」过滤，避免两条管道互相塞死。
 - 实现走 DSH 自带的一次性任务入口 `dsh --profile <档> headless --json <任务>`：取 `final.text` 作回答、`session.sessionId` 作可接续会话号、`status.usage` 报 token 用量。任务以参数列表交给子进程（不拼 shell 字符串），`.cmd` 经 `cmd.exe /c` 调用。
