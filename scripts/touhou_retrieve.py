@@ -43,6 +43,12 @@ FIELD_HIT = 1.0           # SQL 字段精确命中
 FTS_TOP = 30              # FTS 召回的候选数
 VEC_TOP = 30              # 向量召回的候选数
 RRF_K = 60                # RRF 融合常数：score = Σ 1/(RRF_K + rank)
+FACT_BOOST = 2.5          # 确定性答案（聚合/字段/档案）的加成：压过检索片段
+# 东方正作的**格斗作品**。数量少且稳定，直接列出来比从数据里猜可靠——
+# entities.work_type 只记 新作/旧作，没有"格斗"这个值，按 LIKE 查必然为 0。
+FIGHTING_GAMES = (
+    "东方萃梦想", "东方绯想天", "东方非想天则", "东方心绮楼", "东方深秘录", "东方凭依华",
+)
 EMBED_MODEL = "Pro/BAAI/bge-m3"
 
 # 字段意图：问句里出现这些词 → 该查哪个字段
@@ -89,7 +95,11 @@ class TouhouRetriever:
     """THBWiki 检索器。"""
 
     def __init__(self, db_path: Path, config_path: Path | None = None) -> None:
-        self.conn = sqlite3.connect(str(db_path))
+        # check_same_thread=False：插件里检索跑在 asyncio.to_thread 的工作线程上，
+        # 而连接是在事件循环线程建的。实测不加这个参数直接报
+        # "SQLite objects created in a thread can only be used in that same thread"。
+        # 并发安全由调用方的锁保证（插件里用 asyncio.Lock 串行化）。
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._names: List[Tuple[str, str, int]] = []   # (名称, kind, entity_id)，按长度降序
         self._aliases: Dict[str, str] = {}
@@ -564,6 +574,118 @@ class TouhouRetriever:
                     break   # 每个实体先给最相关的一句，避免刷屏
         return hits
 
+    # 聚合路：计数/排序的对象词 → 实体 kind
+    AGG_KINDS: Tuple[Tuple[str, str], ...] = (
+        ("正作", "game"), ("作品", "game"), ("游戏", "game"),
+        ("角色", "character"), ("人物", "character"),
+        ("符卡", "spellcard"),
+        ("专辑", "album"), ("同人", "doujin"),
+    )
+
+    def _aggregate(self, question: str) -> List[Hit]:
+        """聚合路：计数 / 排序 / 最早最晚。
+
+        为什么必须做：D 类问题（"正作一共有多少部"）之前只返回相关段落，
+        数字埋在正文里（ZUN 访谈写着「就有30部作品了」），靠模型自己找不稳。
+        这类问题本质是 SQL 的 COUNT/ORDER BY，直接算出来给确定答案。
+        """
+
+        hits: List[Hit] = []
+        wants_count = any(w in question for w in ("多少", "几部", "几名", "几张", "几个", "总数", "一共有"))
+        wants_order = any(w in question for w in ("排序", "按时间", "按发售", "最早", "最晚", "第一部", "前五部", "前几部"))
+        if not (wants_count or wants_order):
+            return hits
+
+        # (a) 统计作品数量（可带 格斗/旧作/新作 限定）
+        for word, kind in self.AGG_KINDS:
+            if word not in question:
+                continue
+            if "格斗" in question and kind == "game":
+                listed = [
+                    r["name_cn"] for r in self.conn.execute(
+                        "SELECT name_cn FROM entities WHERE kind='game'"
+                    )
+                    if any(fg in str(r["name_cn"]) for fg in FIGHTING_GAMES)
+                ]
+                if listed and wants_count:
+                    hits.append(
+                        Hit(
+                            kind="fact", name="格斗作品数量",
+                            detail={"统计结果": f"东方正作的格斗作品共 {len(listed)} 部：" + "、".join(listed)},
+                            source="数据库统计（entities 表）", url="https://thwiki.cc/",
+                            score=self._final(1.0, 1, True),
+                            why="SQL 聚合：按格斗作品名单统计", official=1,
+                        )
+                    )
+                break
+            where = ["kind=?"]
+            args: List[Any] = [kind]
+            if "格斗" in question:
+                where.append("(name_cn LIKE '%格斗%' OR work_type LIKE '%格斗%')")
+            if "旧作" in question:
+                where.append("work_type LIKE '%旧作%'")
+            elif "新作" in question:
+                where.append("work_type LIKE '%新作%'")
+            if kind == "spellcard":
+                where.append("owner<>''")
+            total = self.conn.execute(
+                f"SELECT COUNT(*) FROM entities WHERE {' AND '.join(where)}", args
+            ).fetchone()[0]
+            if wants_count and total:
+                label = f"{word}（{'/'.join(a for a in ('格斗' if '格斗' in question else '', '旧作' if '旧作' in question else '') if a)}）" if ("格斗" in question or "旧作" in question) else word
+                hits.append(
+                    Hit(
+                        kind="fact", name=f"{label}数量",
+                        detail={"统计结果": f"{label}共 {total} 条"},
+                        source="数据库统计（entities 表）", url="https://thwiki.cc/",
+                        score=self._final(1.0, 1, True),
+                        why=f"SQL 聚合：COUNT({kind})", official=1,
+                    )
+                )
+            break
+
+        # (b) 按发售时间排序（官方游戏有 release_date，实测 40 部都有）
+        if wants_order and ("作品" in question or "正作" in question or "游戏" in question):
+            rows = self.conn.execute(
+                "SELECT name_cn, release_date FROM entities WHERE kind='game' AND release_date<>'' "
+                "ORDER BY release_date LIMIT 6"
+            ).fetchall()
+            if rows:
+                listed = "\n".join(f"{i}. {r['name_cn']}（{r['release_date']}）" for i, r in enumerate(rows, 1))
+                hits.append(
+                    Hit(
+                        kind="fact", name="官方游戏按发售时间排序",
+                        detail={"排序结果": listed},
+                        source="数据库统计（entities 表）", url="https://thwiki.cc/",
+                        score=self._final(1.0, 1, True),
+                        why="SQL 聚合：ORDER BY release_date", official=1,
+                    )
+                )
+
+        # (c) 某场所的成员数量（"红魔馆一共有多少名成员"）
+        if wants_count and any(w in question for w in ("成员", "式神", "弟子")):
+            char_names = {n for n, k, _i in self._names if k == "character"}
+            for target in [
+                r["dst_name"] for r in self.conn.execute("SELECT DISTINCT dst_name FROM relations")
+                if len(str(r["dst_name"])) >= 2 and str(r["dst_name"]) in question
+                and str(r["dst_name"]) not in char_names
+            ][:2]:
+                total = self.conn.execute(
+                    "SELECT COUNT(DISTINCT src_name) FROM relations WHERE dst_name=? AND rel IN ('所属','关联')",
+                    (target,),
+                ).fetchone()[0]
+                if total:
+                    hits.append(
+                        Hit(
+                            kind="fact", name=f"{target}成员数量",
+                            detail={"统计结果": f"{target}共有 {total} 名关联角色"},
+                            source="数据库统计（relations 表）", url="https://thwiki.cc/",
+                            score=self._final(1.0, 1, True),
+                            why="SQL 聚合：COUNT(relations)", official=1,
+                        )
+                    )
+        return hits
+
     def _char_hit(self, name: str, why: str, base: float = 0.92) -> Optional[Hit]:
         """把一个人物名变成一条结果（关系路共用）。"""
 
@@ -901,6 +1023,7 @@ class TouhouRetriever:
         # 而噪声内容常同时出现在 FTS+向量两路 → 2/61 反而压过精确答案。
         # 实测「八云紫住在哪里」正确答句被两条符卡挤出前二，就是这个问题。
         paths = [
+            (4.0, self._aggregate(normalized)),              # SQL 聚合：计数/排序，确定性最高
             (3.0, self._structured(normalized, entities)),   # SQL 字段 / 正文事实：最精确
             (3.0, self._by_section(normalized, entities)),   # 角色档案章节（关键词命中）
             (2.8, self._by_section_semantic(normalized)),    # 角色档案章节（语义命中）
@@ -919,8 +1042,17 @@ class TouhouRetriever:
 
         ranked: List[Hit] = []
         for hit, rrf in agg.values():
-            kind_ok = (not kinds) or (hit.kind in kinds)
-            hit.score = rrf * (1.0 if hit.official else OFFICIAL_PENALTY) * (1.0 if kind_ok else KIND_MISMATCH)
+            # fact 是**算出来的答案**，没有实体类型，不该被类型过滤误伤。
+            # 踩过：「红魔馆一共有多少名成员」里"成员"把意图类型定成 character，
+            # 于是 COUNT 结果被 ×0.6 压到第二名。
+            kind_ok = (not kinds) or (hit.kind in kinds) or hit.kind == "fact"
+            score = rrf * (1.0 if hit.official else OFFICIAL_PENALTY) * (1.0 if kind_ok else KIND_MISMATCH)
+            # 确定性答案（SQL 聚合/字段命中/档案章节）必须压过"检索片段"：
+            # RRF 奖励"多路都命中"，于是热门实体会靠叠加赢过单路的精确事实——
+            # 实测「红魔馆一共有多少名成员」的 COUNT 结果被一个角色的多路命中挤掉。
+            if hit.kind == "fact":
+                score *= FACT_BOOST
+            hit.score = score
             hit.why = f"{hit.why}｜RRF {rrf:.4f}"
             ranked.append(hit)
         ranked.sort(key=lambda h: -h.score)

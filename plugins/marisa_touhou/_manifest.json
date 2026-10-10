@@ -1,0 +1,38 @@
+{
+  "manifest_version": 2,
+  "version": "0.1.0",
+  "name": "东方知识库",
+  "description": "东方Project（THBWiki）知识库检索：角色档案、符卡、设定、作品、关系网。检索由插件做（别名归一化、标签/关系/档案/语义多路召回 + RRF 融合），理解与作答交给 MaiBot 的模型。",
+  "author": {
+    "name": "Marisa Desktop Team",
+    "url": "https://github.com/"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/",
+    "homepage": "https://github.com/",
+    "documentation": "https://github.com/",
+    "issues": "https://github.com/"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "config.get"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "marisa-team.marisa-touhou",
+  "plugin_type": "normal"
+}

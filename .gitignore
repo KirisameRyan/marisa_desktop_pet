@@ -380,6 +380,7 @@ run_pet.bat
 !/plugins/marisa_gate
 !/plugins/marisa_voice
 !/plugins/marisa_dsh
+!/plugins/marisa_touhou
 # 插件来源与必需性登记表，必须随主仓库走
 !/plugins/MANIFEST.md
 
@@ -393,6 +394,7 @@ config.toml
 # 新增第一方插件时，记得同时在这里补一条，否则它的 config.toml 会静默不入库。
 !/plugins/marisa_cv/config.toml
 !/plugins/marisa_dsh/config.toml
+!/plugins/marisa_touhou/config.toml
 
 interested_rates.txt
 MaiBot.code-workspace

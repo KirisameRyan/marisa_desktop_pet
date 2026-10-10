@@ -1,0 +1,20 @@
+[plugin]
+enabled = true
+config_version = "0.1.0"
+
+[retrieval]
+# 知识库位置（相对仓库根目录）
+db_path = "data\\thwiki\\thwiki.db"
+# 每次返回几条资料给模型
+limit = 3
+# 单条资料最多给多少字（角色档案/设定段落）
+max_chars = 900
+# 是否让模型看到出处链接
+show_source = true
+
+[embedding]
+# 向量检索用的嵌入服务配置来源（沿用 MaiBot 自己的 model_config.toml）
+# 这样插件里不必再存一份 API key
+config_file = "config\\model_config.toml"
+# 关掉就是纯 SQL/标签/关系/FTS 检索（不调外部服务，但语义题会变差）
+enabled = true
