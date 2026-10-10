@@ -213,11 +213,41 @@ def extract_summary(wikitext: str, limit: int = 400) -> str:
     body = match.group(1)
     body = re.sub(r"\{\|[\s\S]*?\|\}", " ", body)  # 去掉表格
     body = _strip_templates(body)
+    # 去掉文件嵌入：不清的话摘要会变成「缩略图|右|中间角色即八云紫」这种图片说明
+    body = re.sub(r"\[\[(?:文件|File|Image):[^\]]*\]\]", " ", body, flags=re.I)
     body = _LINK_RE.sub(r"\1", body)
     body = _TAG_RE.sub(" ", body)
     body = re.sub(r"^[=*#:;].*$", " ", body, flags=re.M)  # 去掉标题行/列表符
+    body = re.sub(r"(?:缩略图|thumb|右|左|居中|\d+px)\s*\|?", " ", body, flags=re.I)
     body = re.sub(r"\s+", " ", body).strip()
     return body[:limit]
+
+
+def extract_body(wikitext: str, limit: int = 1200) -> str:
+    """抽取页面的**可读正文**，供 FTS 索引。
+
+    为什么必须做：首版 FTS 只索引 name/summary，而 summary 大面积为空
+    （章节名不匹配、角色页没有"概述"段），导致字面检索几乎无内容可搜——
+    实测「红魔馆都有哪些成员」直接零结果。这里改为索引清洗后的页面正文。
+
+    只给"页面级"实体存正文（见 BODY_KINDS）：行级实体（曲目/二次符卡/同人作者）
+    会让同一张专辑页的正文被重复存十几遍，实测会把索引撑到数 GB。
+    """
+
+    text = _REF_RE.sub("", wikitext)
+    text = re.sub(r"\{\|[\s\S]*?\|\}", " ", text)      # 表格
+    text = _strip_templates(text)                       # 按深度剥模板
+    text = _LINK_RE.sub(r"\1", text)                    # [[A|B]] → B
+    text = re.sub(r"\[\[(?:文件|File|Image):[^\]]*\]\]", " ", text, flags=re.I)
+    text = _TAG_RE.sub(" ", text)
+    text = re.sub(r"^[=*#:;{|].*$", " ", text, flags=re.M)   # 标题/列表/表格行标记
+    text = re.sub(r"'{2,}", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+# 只有这些 kind 存页面正文；行级实体（一页几十条）不存，否则正文重复十几遍
+BODY_KINDS = {"character", "game", "album", "doujin", "spellcard", "official_track", "doujin_game"}
 
 
 def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool) -> int:
@@ -253,6 +283,7 @@ def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool
               owner        TEXT, work TEXT, card_no TEXT, stage TEXT, description TEXT,
               species      TEXT, ability TEXT, location TEXT, first_work TEXT,
               summary      TEXT,
+              body         TEXT,               -- 清洗后的整页正文（FTS 的真正语料）
               extra_json   TEXT NOT NULL,      -- 原始参数全存：映射漏了也不丢数据
               source_pageid INTEGER NOT NULL,
               source_title  TEXT NOT NULL,
@@ -269,7 +300,7 @@ def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool
             CREATE TABLE aliases (alias TEXT PRIMARY KEY, target_title TEXT NOT NULL);
 
             CREATE VIRTUAL TABLE entities_fts USING fts5(
-              name_cn, name_jp, summary, parent_title,
+              name_cn, name_jp, summary, parent_title, body,
               content='', tokenize='trigram'
             );
             """
@@ -310,6 +341,7 @@ def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool
                     continue
 
                 summary = extract_summary(wikitext)
+                body = extract_body(wikitext)
                 for name, params in iter_template_calls(wikitext):
                     kind = TEMPLATES.get(name)
                     if kind is None:
@@ -328,35 +360,42 @@ def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool
                         counts[kind] += 1
                         rows += 1
                         continue
+                    # 占位符由列数生成，避免手工数数出错（踩过：38 列配了 37 个 ?）
+                    _cols = (
+                        "kind, official, name_cn, name_jp, name_romaji, name_en, parent_title, "
+                        "circle, release_date, release_event, catalog_no, price, work_type, "
+                        "duration, composer, arranger, lyricist, vocal, performer, instrument, "
+                        "original_for, genre, characters, owner, work, card_no, stage, description, "
+                        "species, ability, location, first_work, summary, body, extra_json, "
+                        "source_pageid, source_title, url"
+                    )
+                    _row = (
+                        kind, 1 if kind in OFFICIAL_KINDS else 0,
+                        values["name_cn"], values["name_jp"], values["name_romaji"],
+                        values["name_en"], title,
+                        values["circle"], values["release_date"], values["release_event"],
+                        values["catalog_no"], values["price"], values["work_type"],
+                        values["duration"], values["composer"], values["arranger"],
+                        values["lyricist"], values["vocal"], values["performer"],
+                        values["instrument"], values["original_for"], values["genre"],
+                        values["characters"], values["owner"], values["work"],
+                        values["card_no"], values["stage"], values["description"],
+                        values["species"], values["ability"], values["location"],
+                        values["first_work"], summary,
+                        body if kind in BODY_KINDS else "",
+                        extra, pageid, title, url,
+                    )
                     conn.execute(
-                        """INSERT OR IGNORE INTO entities(
-                             kind, official, name_cn, name_jp, name_romaji, name_en, parent_title,
-                             circle, release_date, release_event, catalog_no, price, work_type,
-                             duration, composer, arranger, lyricist, vocal, performer, instrument,
-                             original_for, genre, characters, owner, work, card_no, stage, description,
-                             species, ability, location, first_work, summary, extra_json,
-                             source_pageid, source_title, url)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            kind, 1 if kind in OFFICIAL_KINDS else 0,
-                            values["name_cn"], values["name_jp"], values["name_romaji"],
-                            values["name_en"], title,
-                            values["circle"], values["release_date"], values["release_event"],
-                            values["catalog_no"], values["price"], values["work_type"],
-                            values["duration"], values["composer"], values["arranger"],
-                            values["lyricist"], values["vocal"], values["performer"],
-                            values["instrument"], values["original_for"], values["genre"],
-                            values["characters"], values["owner"], values["work"],
-                            values["card_no"], values["stage"], values["description"],
-                            values["species"], values["ability"], values["location"],
-                            values["first_work"], summary, extra, pageid, title, url,
-                        ),
+                        f"INSERT OR IGNORE INTO entities({_cols}) "
+                        f"VALUES ({','.join(['?'] * len(_row))})",
+                        _row,
                     )
                     if conn is not None:
                         conn.execute(
-                            "INSERT INTO entities_fts(rowid, name_cn, name_jp, summary, parent_title) "
-                            "VALUES (last_insert_rowid(), ?, ?, ?, ?)",
-                            (values["name_cn"], values["name_jp"], summary, title),
+                            "INSERT INTO entities_fts(rowid, name_cn, name_jp, summary, parent_title, body) "
+                            "VALUES (last_insert_rowid(), ?, ?, ?, ?, ?)",
+                            (values["name_cn"], values["name_jp"], summary, title,
+                             body if kind in BODY_KINDS else ""),
                         )
                     counts[kind] += 1
                     rows += 1

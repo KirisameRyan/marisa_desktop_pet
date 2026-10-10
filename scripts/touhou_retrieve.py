@@ -282,57 +282,104 @@ class TouhouRetriever:
 
     # ─────────────────── 关系网 / 标签检索 ───────────────────
 
-    def _by_relation(self, question: str) -> List[Hit]:
-        """关系路：「红魔馆都有哪些成员」→ relations 里 dst=红魔馆 的 src。
+    def _char_hit(self, name: str, why: str, base: float = 0.92) -> Optional[Hit]:
+        """把一个人物名变成一条结果（关系路共用）。"""
 
-        两个必须守住的边界（都是踩过的坑）：
-        1) **必须由关系词触发**。首版无条件触发，结果「⑨是谁」也被拉进关系查询，
-           返回「大妖精 -所属-> 琪露诺」这种荒谬结果（"琪露诺"被当成了地点）。
-        2) **目标不能是人物名**。关系表里的 dst 混进了大量人物（正文链接的噪声），
-           只有非人物的目标才可能是场所/组织。
+        row = self.conn.execute(
+            """SELECT entity_id, kind, name_cn, source_title, url, official, species, work_type
+               FROM entities WHERE kind='character' AND name_cn=? LIMIT 1""",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return None
+        return Hit(
+            kind="character", name=row["name_cn"],
+            detail={"种族": row["species"], "职业": row["work_type"]},
+            source=row["source_title"], url=row["url"],
+            score=self._final(base, row["official"], True), why=why, official=row["official"],
+        )
+
+    def _by_relation(self, question: str) -> List[Hit]:
+        """关系路，两个方向都要走（都是踩坑踩出来的）：
+
+        ① **人物为主语**：「八云紫的式神是谁」→ relations 里 src=八云紫 的语义边。
+           首版把"目标不能是人物"当铁律，结果这一整类问题被堵死。
+        ② **场所为主语**：「红魔馆都有哪些成员」→ relations 里 dst=红魔馆 的边。
+           这个方向的目标**必须**是非人物（否则"琪露诺"会被当成地点）。
         """
 
         hits: List[Hit] = []
-        rel_word = None
-        for word, rel in (("成员", "所属"), ("式神", "所属"), ("弟子", "所属"),
-                          ("住在", "所属"), ("归属", "所属"), ("登场", "登场")):
-            if word in question:
-                rel_word = rel
-                break
-        if rel_word is None:
-            return hits   # 没有关系词就不走这条路
         char_names = {name for name, kind, _i in self._names if kind == "character"}
-        targets = [
-            r["dst_name"]
-            for r in self.conn.execute("SELECT DISTINCT dst_name FROM relations")
-            if len(r["dst_name"]) >= 2 and r["dst_name"] in question and r["dst_name"] not in char_names
-        ]
-        if not targets:
+        mentioned: List[str] = []
+        for name, _kind, _id in self._names:      # 已按长度降序
+            if len(name) >= 2 and name in question and name not in mentioned:
+                mentioned.append(name)
+        if not mentioned:
             return hits
-        for target in targets[:3]:
-            rows = self.conn.execute(
-                """SELECT DISTINCT src_name FROM relations
-                   WHERE dst_name=? AND rel IN ('所属','关联','登场') ORDER BY weight DESC LIMIT 12""",
-                (target,),
-            ).fetchall()
-            for row in rows:
-                name = row["src_name"]
-                char = self.conn.execute(
-                    """SELECT entity_id, kind, name_cn, source_title, url, official, species, work_type
-                       FROM entities WHERE kind='character' AND name_cn=? LIMIT 1""",
-                    (name,),
+
+        rel_words = ("式神", "弟子", "妹妹", "姐姐", "哥哥", "弟弟", "主人", "从者",
+                     "侍奉", "师父", "师傅", "上司", "下属", "学生", "关系", "亲友", "挚友")
+        has_rel_intent = any(w in question for w in rel_words)
+
+        # ① 人物 → 人物的语义关系（由正文抽取的 source='text' 边）
+        if has_rel_intent:
+            # 特例：问题里同时出现两个人且问"关系" → 直接查这两人之间的边。
+            # 之前只查"第一个提到的人的所有关系"，于是「芙兰朵露和蕾米莉亚是什么关系」
+            # 返回了第三个人（十六夜咲夜）——因为共现边的排名里她更高。
+            chars_in_q = [n for n in mentioned if n in char_names]
+            if len(chars_in_q) >= 2 and "关系" in question:
+                a, b = chars_in_q[0], chars_in_q[1]
+                edge = self.conn.execute(
+                    """SELECT src_name, rel, dst_name, weight FROM relations
+                       WHERE (src_name=? AND dst_name=?) OR (src_name=? AND dst_name=?)
+                       -- 有类型化的边（妹妹/式神/弟子…）就优先于泛化的"关联"
+                       ORDER BY CASE rel WHEN '关联' THEN 1 ELSE 0 END, weight DESC LIMIT 1""",
+                    (a, b, b, a),
                 ).fetchone()
-                if char is None:
-                    continue
-                hits.append(
-                    Hit(
-                        kind="character", name=char["name_cn"],
-                        detail={"种族": char["species"], "职业": char["work_type"]},
-                        source=char["source_title"], url=char["url"],
-                        score=self._final(0.92, char["official"], True),
-                        why=f"关系：{name} -{rel_word or '所属'}-> {target}", official=char["official"],
-                    )
-                )
+                label = edge["rel"] if edge else "关联"
+                pair = [a, b] if not edge else [edge["src_name"], edge["dst_name"]]
+                for name in pair:
+                    hit = self._char_hit(name, f"两人关系：{a} ↔ {b}（{label}）", base=0.95)
+                    if hit:
+                        hits.append(hit)
+            for name in chars_in_q[:2]:
+                rows = self.conn.execute(
+                    """SELECT dst_name, rel, weight FROM relations
+                       WHERE src_name=? AND dst_name IN
+                             (SELECT name_cn FROM entities WHERE kind='character')
+                       ORDER BY weight DESC LIMIT 6""",
+                    (name,),
+                ).fetchall()
+                for row in rows:
+                    hit = self._char_hit(row["dst_name"], f"关系：{name} -{row['rel']}-> {row['dst_name']}")
+                    if hit:
+                        hits.append(hit)
+                # 反向：别人页面里写到"某人是我的式神"时，本体在 dst 侧
+                rows = self.conn.execute(
+                    """SELECT src_name, rel, weight FROM relations
+                       WHERE dst_name=? AND src_name IN
+                             (SELECT name_cn FROM entities WHERE kind='character')
+                       ORDER BY weight DESC LIMIT 6""",
+                    (name,),
+                ).fetchall()
+                for row in rows:
+                    hit = self._char_hit(row["src_name"], f"关系：{row['src_name']} -{row['rel']}-> {name}")
+                    if hit:
+                        hits.append(hit)
+
+        # ② 场所/组织 → 成员
+        if any(w in question for w in ("成员", "住在", "归属", "住着", "哪些角色", "都有谁")):
+            for target in [n for n in mentioned if n not in char_names][:3]:
+                rows = self.conn.execute(
+                    """SELECT DISTINCT src_name FROM relations
+                       WHERE dst_name=? ORDER BY weight DESC LIMIT 12""",
+                    (target,),
+                ).fetchall()
+                for row in rows:
+                    if row["src_name"] in char_names:
+                        hit = self._char_hit(row["src_name"], f"关系：{row['src_name']} -所属-> {target}")
+                        if hit:
+                            hits.append(hit)
         return hits
 
     def _by_tag(self, question: str) -> List[Hit]:

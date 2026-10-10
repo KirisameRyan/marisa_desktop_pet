@@ -94,6 +94,89 @@ def build_nicknames(conn: sqlite3.Connection) -> int:
     return len(NICKNAMES)
 
 
+# 关系词：从角色页正文里，用"关系词 ± 邻窗内的人物名"抽显式关系边。
+# 为什么必须补这一步：首版 relations 只有"所属/关联/登场"三种，**式神/弟子/姐妹/主人
+# 一条都没有**。结果「八云紫的式神是谁」只能靠 FTS/向量凑答案，多跳问题（"地灵殿主人
+# 的妹妹的能力"）则完全无从下手——没有边可走。
+REL_WORDS: Tuple[str, ...] = (
+    "式神", "妹妹", "姐姐", "哥哥", "弟弟", "弟子", "徒弟", "主人", "从者", "侍奉",
+    "上司", "下属", "师父", "师傅", "学生", "同门", "挚友", "亲友", "青梅竹马",
+    "妻子", "丈夫", "母亲", "父亲", "女儿", "儿子", "祖先", "后代", "血亲",
+)
+_REL_WINDOW = 40   # 关系词前后各看多少字
+
+
+def extract_semantic_relations(conn: sqlite3.Connection, data_dir: Path, limit: int | None) -> int:
+    """从角色页正文抽显式关系边。"""
+
+    # 角色名 → 规范名（长名优先，避免"紫"这种短名乱配）
+    chars: Dict[str, str] = {}
+    for row in conn.execute("SELECT name_cn, name_jp FROM entities WHERE kind='character'"):
+        for key in (row["name_cn"], row["name_jp"]):
+            text = str(key or "").strip()
+            if len(text) >= 2:
+                chars[text] = str(row["name_cn"] or text).strip()
+    long_names = sorted(chars.items(), key=lambda kv: -len(kv[0]))
+
+    # 角色页正文：靠 source_title 找到对应页面
+    char_pages: Dict[str, str] = {}
+    for row in conn.execute(
+        "SELECT DISTINCT source_title, name_cn FROM entities WHERE kind='character'"
+    ):
+        char_pages[str(row["source_title"])] = str(row["name_cn"] or "")
+
+    pages = 0
+    edges: Counter = Counter()
+    for path in sorted(glob.glob(str(data_dir / "pages-ns*.jsonl.gz"))):
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                page = json.loads(line)
+                pages += 1
+                if limit is not None and pages > limit:
+                    break
+                title = str(page.get("title") or "")
+                subject = char_pages.get(title)
+                if not subject:
+                    continue          # 只处理角色页
+                raw = page.get("wikitext") or ""
+                # 去掉 ref/表格，保留正文（链接保留显示名）
+                body = _REF_SUB(raw)
+                body = _LINK_RE.sub(r"\1", body)
+
+                for word in REL_WORDS:
+                    start = 0
+                    while True:
+                        pos = body.find(word, start)
+                        if pos < 0:
+                            break
+                        start = pos + len(word)
+                        window = body[max(0, pos - _REL_WINDOW) : pos + len(word) + _REL_WINDOW]
+                        for name, canonical in long_names:
+                            if canonical == subject:
+                                continue
+                            if name in window:
+                                # 权重用"该关系词在两人共现窗口里出现的次数"，用 1 起步
+                                edges[("character", subject, word, "character", canonical, "text")] += 1
+                                break   # 一个窗口只取最长的一个名字，避免重复计数
+        if limit is not None and pages > limit:
+            break
+
+    for (src_kind, src_name, rel, dst_kind, dst_name, source), weight in edges.items():
+        if weight < 1:
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO relations(src_kind,src_name,rel,dst_kind,dst_name,weight,source) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (src_kind, src_name, rel, dst_kind, dst_name, float(weight), source),
+        )
+    conn.commit()
+    return len(edges)
+
+
+def _REF_SUB(text: str) -> str:
+    return re.sub(r"<ref[\s\S]*?</ref>|<ref[^>]*/>", " ", text, flags=re.I)
+
+
 def build_tags_and_relations(conn: sqlite3.Connection, data_dir: Path, limit: int | None) -> Tuple[int, int]:
     """扫描页面，派生标签与关系。"""
 
@@ -241,6 +324,8 @@ def main() -> int:
     nicks = build_nicknames(conn)
     print(f"俗称表：{nicks} 条")
     build_tags_and_relations(conn, args.data, args.limit)
+    semantic = extract_semantic_relations(conn, args.data, args.limit)
+    print(f"语义关系（从角色页正文抽取）：{semantic} 条")
 
     print("\n=== 标签分布（按类型） ===")
     for tag_type, n in conn.execute(
