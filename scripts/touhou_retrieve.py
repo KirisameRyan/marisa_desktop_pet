@@ -25,17 +25,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sqlite3
+import struct
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
 
 # ─────────────────── 可调参数（回归测试就是用来调这些的）───────────────────
 OFFICIAL_PENALTY = 0.25   # 同人内容的乘区（第 2 层）
 KIND_MISMATCH = 0.6       # 意图类型不匹配时的乘区
 FIELD_HIT = 1.0           # SQL 字段精确命中
 FTS_TOP = 30              # FTS 召回的候选数
+VEC_TOP = 30              # 向量召回的候选数
+RRF_K = 60                # RRF 融合常数：score = Σ 1/(RRF_K + rank)
+EMBED_MODEL = "Pro/BAAI/bge-m3"
 
 # 字段意图：问句里出现这些词 → 该查哪个字段
 FIELD_INTENTS: List[Tuple[Tuple[str, ...], str]] = [
@@ -80,12 +88,106 @@ class Hit:
 class TouhouRetriever:
     """THBWiki 检索器。"""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, config_path: Path | None = None) -> None:
         self.conn = sqlite3.connect(str(db_path))
         self.conn.row_factory = sqlite3.Row
         self._names: List[Tuple[str, str, int]] = []   # (名称, kind, entity_id)，按长度降序
         self._aliases: Dict[str, str] = {}
+        self._vectors: Dict[int, Any] = {}             # entity_id → 向量
+        self._embed_api: Optional[Tuple[str, str]] = None
         self._load_index()
+        self._load_vectors(config_path or (Path("config") / "model_config.toml"))
+
+    # ─────────────────── 向量层 ───────────────────
+
+    def _load_vectors(self, config_path: Path) -> None:
+        """载入 bge-m3 向量与嵌入服务的连接信息。
+
+        向量由 thwiki_embed.py 生成（结构化摘要 → bge-m3），查询时把问题也嵌入，
+        算余弦相似度。这一步解决的是"字面不同但意思相同"：
+        实测「八云紫的式神是谁」vs「紫妈的式神」余弦 0.647，而 FTS 字面完全对不上。
+        """
+
+        try:
+            import numpy as np
+        except ImportError as exc:   # 没装 numpy 就退化为无向量模式，但要显式说明
+            print(f"  [警告] numpy 不可用，向量路已禁用：{exc}")
+            return
+        try:
+            cfg = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        for provider in cfg.get("api_providers", []):
+            if provider.get("name") == "SiliconFlow" and provider.get("api_key"):
+                self._embed_api = (
+                    str(provider["base_url"]).rstrip("/"),
+                    str(provider["api_key"]),
+                )
+                break
+        ids: List[int] = []
+        mats: List[Any] = []
+        try:
+            for row in self.conn.execute("SELECT entity_id, vec FROM vectors"):
+                ids.append(int(row["entity_id"]))
+                mats.append(np.frombuffer(row["vec"], dtype="<f4"))
+        except sqlite3.OperationalError:
+            return   # 还没跑嵌入脚本
+        if not ids:
+            return
+        self._vec_ids = ids
+        matrix = np.vstack(mats)
+        # 归一化后余弦相似度 = 点积，检索时快得多
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        self._vec_mat = matrix / np.where(norms == 0, 1.0, norms)
+        self._np = np
+
+    def _embed(self, text: str) -> Optional[Any]:
+        if not self._embed_api or not getattr(self, "_vec_mat", None) is not None:
+            return None
+        base, key = self._embed_api
+        try:
+            resp = httpx.post(
+                f"{base}/embeddings",
+                json={"model": EMBED_MODEL, "input": [text]},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=60.0,
+            )
+            if resp.status_code != 200:
+                return None
+            return self._np.asarray(resp.json()["data"][0]["embedding"], dtype="float32")
+        except Exception:
+            return None
+
+    def _vector(self, question: str) -> List[Hit]:
+        """向量路：语义相似召回。"""
+
+        vec = self._embed(question)
+        if vec is None:
+            return []
+        norm = self._np.linalg.norm(vec) or 1.0
+        sims = self._vec_mat @ (vec / norm)
+        top = self._np.argsort(-sims)[:VEC_TOP]
+        hits: List[Hit] = []
+        for index in top:
+            score = float(sims[index])
+            if score < 0.30:      # 语义太弱的不要，避免拉进无关内容
+                continue
+            entity_id = self._vec_ids[int(index)]
+            row = self.conn.execute(
+                "SELECT entity_id,kind,name_cn,name_jp,parent_title,source_title,url,official "
+                "FROM entities WHERE entity_id=?", (entity_id,)
+            ).fetchone()
+            if row is None:
+                continue
+            hits.append(
+                Hit(
+                    kind=row["kind"], name=row["name_cn"] or row["name_jp"] or "",
+                    detail={"语义相似度": round(score, 3), "所属": row["parent_title"] or ""},
+                    source=row["source_title"], url=row["url"],
+                    score=score, why="向量语义召回", official=row["official"],
+                )
+            )
+        return hits
 
     # ─────────────────── 索引 ───────────────────
 
@@ -292,28 +394,32 @@ class TouhouRetriever:
         wants_list = self.is_list(question)
         kinds = self.route_kinds(question)
 
-        # (0) 实体卡：只要问题里明确提到某个实体，就先把"这个实体本身"给它。
-        #     首版漏了这一步，导致「⑨是谁」「pad长是谁」这类问句虽然正确归一化到了
-        #     琪露诺/十六夜咲夜，却只返回 FTS 噪声，答不出"是谁"。
-        for _name, _kind, entity_id in entities[:2]:
-            row = self.conn.execute("SELECT * FROM entities WHERE entity_id=?", (entity_id,)).fetchone()
-            if row is None:
-                continue
-            hits.append(
-                Hit(
-                    kind=row["kind"],
-                    name=row["name_cn"] or row["name_jp"] or "",
-                    detail={
-                        "日文名": row["name_jp"], "英文名": row["name_en"],
-                        "种族": row["species"], "职业": row["work_type"],
-                        "所在地": row["location"], "初登场": row["first_work"],
-                        "发行": row["release_date"],
-                    },
-                    source=row["source_title"], url=row["url"],
-                    score=self._final(0.85, row["official"], True),
-                    why="实体卡（问题里直接提到的实体）", official=row["official"],
+        # (0) 实体卡：**只在"问的就是这个实体本身"时给**。
+        #     判断依据：问题里没有字段意图（种族/能力…）也没有关系意图（式神/成员/弟子…）。
+        #     踩过两次同一个坑：无条件给实体卡时，「八云紫的式神是谁」会返回八云紫自己；
+        #     因为此时八云紫是**主语**，答案另有其人。
+        has_field_intent = field_name is not None
+        has_rel_intent = any(w in question for w in ("成员", "式神", "弟子", "住在", "归属", "关系", "侍奉"))
+        if not has_field_intent and not has_rel_intent:
+            for _name, _kind, entity_id in entities[:2]:
+                row = self.conn.execute("SELECT * FROM entities WHERE entity_id=?", (entity_id,)).fetchone()
+                if row is None:
+                    continue
+                hits.append(
+                    Hit(
+                        kind=row["kind"],
+                        name=row["name_cn"] or row["name_jp"] or "",
+                        detail={
+                            "日文名": row["name_jp"], "英文名": row["name_en"],
+                            "种族": row["species"], "职业": row["work_type"],
+                            "所在地": row["location"], "初登场": row["first_work"],
+                            "发行": row["release_date"],
+                        },
+                        source=row["source_title"], url=row["url"],
+                        score=self._final(0.85, row["official"], True),
+                        why="实体卡（问题问的就是这个实体）", official=row["official"],
+                    )
                 )
-            )
 
         # (a) 实体 + 字段 → 单点精确查询
         if entities and field_name:
@@ -448,19 +554,31 @@ class TouhouRetriever:
         normalized = self.normalize(question)
         entities = self.match_entities(normalized)
         kinds = self.route_kinds(normalized)
-        hits = (
-            self._structured(normalized, entities)
-            + self._by_relation(normalized)
-            + self._by_tag(normalized)
-            + self._fts(normalized, kinds, entities)
-        )
-        # 同一实体去重：保留分数最高的那条
-        best: Dict[Tuple[str, str], Hit] = {}
-        for hit in hits:
-            key = (hit.kind, hit.name)
-            if key not in best or hit.score > best[key].score:
-                best[key] = hit
-        ranked = sorted(best.values(), key=lambda h: -h.score)
+
+        # 五个通道各自召回，再按 **RRF（排名倒数融合）** 合并。
+        # 为什么不能直接加分数：bm25 是负值、余弦是 0~1、字段命中是常数 1.0——
+        # 量纲完全不可比，相加会让某个通道淹没其它通道。RRF 只看排名，天然公平。
+        paths = [
+            self._structured(normalized, entities),
+            self._by_relation(normalized),
+            self._by_tag(normalized),
+            self._fts(normalized, kinds, entities),
+            self._vector(normalized),
+        ]
+        agg: Dict[Tuple[str, str], List[Any]] = {}
+        for hits in paths:
+            for rank, hit in enumerate(sorted(hits, key=lambda h: -h.score), 1):
+                key = (hit.kind, hit.name)
+                slot = agg.setdefault(key, [hit, 0.0])
+                slot[1] += 1.0 / (RRF_K + rank)
+
+        ranked: List[Hit] = []
+        for hit, rrf in agg.values():
+            kind_ok = (not kinds) or (hit.kind in kinds)
+            hit.score = rrf * (1.0 if hit.official else OFFICIAL_PENALTY) * (1.0 if kind_ok else KIND_MISMATCH)
+            hit.why = f"{hit.why}｜RRF {rrf:.4f}"
+            ranked.append(hit)
+        ranked.sort(key=lambda h: -h.score)
         return ranked[:limit]
 
 
