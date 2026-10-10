@@ -114,6 +114,13 @@ class TouhouRetriever:
         self._names = names
         for row in self.conn.execute("SELECT alias, target_title FROM aliases"):
             self._aliases[str(row["alias"]).strip()] = str(row["target_title"]).strip()
+        # 俗称表由 thwiki_enrich.py 写入；没跑过富化时要能照常工作
+        self._nicknames: Dict[str, str] = {}
+        try:
+            for row in self.conn.execute("SELECT nick, canonical FROM nicknames"):
+                self._nicknames[str(row["nick"])] = str(row["canonical"])
+        except sqlite3.OperationalError:
+            self._nicknames = {}
 
     @staticmethod
     def _short_forms(name: str) -> List[str]:
@@ -155,17 +162,101 @@ class TouhouRetriever:
         return found
 
     def normalize(self, question: str) -> str:
-        """把问题里的别名替换成规范标题（重定向表 + 手工俗称表）。
+        """把问题里的**俗称/别名**替换成规范名。
 
-        「紫妈」「⑨」「pad长」这类圈内黑话不在重定向表里，需要手工俗称表；
-        这里先接重定向，俗称表随后补。
+        这是 E 组（⑨/紫妈/pad长/红白/黑白…）的唯一解法：这些梗称既不在重定向表里，
+        也不是任何实体名。俗称表由 thwiki_enrich.py 写入，可继续追加。
         """
 
         text = question
+        # 俗称优先（长俗称先行，避免"紫妈"被"紫"先替换掉）
+        for nick, canonical in sorted(self._nicknames.items(), key=lambda kv: -len(kv[0])):
+            if nick in text:
+                text = text.replace(nick, canonical)
         for alias, target in self._aliases.items():
-            if len(alias) >= 2 and alias in text:
+            if len(alias) >= 3 and alias in text:
                 text = text.replace(alias, target)
         return text
+
+    # ─────────────────── 关系网 / 标签检索 ───────────────────
+
+    def _by_relation(self, question: str) -> List[Hit]:
+        """关系路：「红魔馆都有哪些成员」→ relations 里 dst=红魔馆 的 src。
+
+        两个必须守住的边界（都是踩过的坑）：
+        1) **必须由关系词触发**。首版无条件触发，结果「⑨是谁」也被拉进关系查询，
+           返回「大妖精 -所属-> 琪露诺」这种荒谬结果（"琪露诺"被当成了地点）。
+        2) **目标不能是人物名**。关系表里的 dst 混进了大量人物（正文链接的噪声），
+           只有非人物的目标才可能是场所/组织。
+        """
+
+        hits: List[Hit] = []
+        rel_word = None
+        for word, rel in (("成员", "所属"), ("式神", "所属"), ("弟子", "所属"),
+                          ("住在", "所属"), ("归属", "所属"), ("登场", "登场")):
+            if word in question:
+                rel_word = rel
+                break
+        if rel_word is None:
+            return hits   # 没有关系词就不走这条路
+        char_names = {name for name, kind, _i in self._names if kind == "character"}
+        targets = [
+            r["dst_name"]
+            for r in self.conn.execute("SELECT DISTINCT dst_name FROM relations")
+            if len(r["dst_name"]) >= 2 and r["dst_name"] in question and r["dst_name"] not in char_names
+        ]
+        if not targets:
+            return hits
+        for target in targets[:3]:
+            rows = self.conn.execute(
+                """SELECT DISTINCT src_name FROM relations
+                   WHERE dst_name=? AND rel IN ('所属','关联','登场') ORDER BY weight DESC LIMIT 12""",
+                (target,),
+            ).fetchall()
+            for row in rows:
+                name = row["src_name"]
+                char = self.conn.execute(
+                    """SELECT entity_id, kind, name_cn, source_title, url, official, species, work_type
+                       FROM entities WHERE kind='character' AND name_cn=? LIMIT 1""",
+                    (name,),
+                ).fetchone()
+                if char is None:
+                    continue
+                hits.append(
+                    Hit(
+                        kind="character", name=char["name_cn"],
+                        detail={"种族": char["species"], "职业": char["work_type"]},
+                        source=char["source_title"], url=char["url"],
+                        score=self._final(0.92, char["official"], True),
+                        why=f"关系：{name} -{rel_word or '所属'}-> {target}", official=char["official"],
+                    )
+                )
+        return hits
+
+    def _by_tag(self, question: str) -> List[Hit]:
+        """标签路：「所有吸血鬼角色」「魔法使种族的角色」→ tags 表过滤。"""
+
+        hits: List[Hit] = []
+        for row in self.conn.execute(
+            """SELECT t.tag_value, t.tag_type, e.entity_id, e.kind, e.name_cn, e.name_jp,
+                      e.source_title, e.url, e.official, e.species, e.work_type
+               FROM tags t JOIN entities e ON e.entity_id = t.entity_id
+               WHERE t.tag_type IN ('种族','职业')
+                 AND length(t.tag_value) >= 2
+                 AND instr(?, t.tag_value) > 0
+               LIMIT 12""",
+            (question,),
+        ):
+            hits.append(
+                Hit(
+                    kind=row["kind"], name=row["name_cn"] or "",
+                    detail={"匹配标签": f"{row['tag_type']}={row['tag_value']}"},
+                    source=row["source_title"], url=row["url"],
+                    score=self._final(0.9, row["official"], True),
+                    why=f"标签命中 {row['tag_type']}={row['tag_value']}", official=row["official"],
+                )
+            )
+        return hits
 
     # ─────────────────── ② 意图路由 ───────────────────
 
@@ -200,6 +291,29 @@ class TouhouRetriever:
         field_name = self.route_field(question)
         wants_list = self.is_list(question)
         kinds = self.route_kinds(question)
+
+        # (0) 实体卡：只要问题里明确提到某个实体，就先把"这个实体本身"给它。
+        #     首版漏了这一步，导致「⑨是谁」「pad长是谁」这类问句虽然正确归一化到了
+        #     琪露诺/十六夜咲夜，却只返回 FTS 噪声，答不出"是谁"。
+        for _name, _kind, entity_id in entities[:2]:
+            row = self.conn.execute("SELECT * FROM entities WHERE entity_id=?", (entity_id,)).fetchone()
+            if row is None:
+                continue
+            hits.append(
+                Hit(
+                    kind=row["kind"],
+                    name=row["name_cn"] or row["name_jp"] or "",
+                    detail={
+                        "日文名": row["name_jp"], "英文名": row["name_en"],
+                        "种族": row["species"], "职业": row["work_type"],
+                        "所在地": row["location"], "初登场": row["first_work"],
+                        "发行": row["release_date"],
+                    },
+                    source=row["source_title"], url=row["url"],
+                    score=self._final(0.85, row["official"], True),
+                    why="实体卡（问题里直接提到的实体）", official=row["official"],
+                )
+            )
 
         # (a) 实体 + 字段 → 单点精确查询
         if entities and field_name:
@@ -334,7 +448,12 @@ class TouhouRetriever:
         normalized = self.normalize(question)
         entities = self.match_entities(normalized)
         kinds = self.route_kinds(normalized)
-        hits = self._structured(normalized, entities) + self._fts(normalized, kinds, entities)
+        hits = (
+            self._structured(normalized, entities)
+            + self._by_relation(normalized)
+            + self._by_tag(normalized)
+            + self._fts(normalized, kinds, entities)
+        )
         # 同一实体去重：保留分数最高的那条
         best: Dict[Tuple[str, str], Hit] = {}
         for hit in hits:
