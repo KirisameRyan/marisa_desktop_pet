@@ -178,12 +178,15 @@ class TouhouRetriever:
             ).fetchone()
             if row is None:
                 continue
+            is_doujin = self._is_doujin_page(row["title"])
             hits.append(
                 Hit(
                     kind="passage", name=row["title"],
                     detail={"片段（第%s块）" % row["chunk_no"]: row["text"][:220]},
                     source=row["title"], url=row["url"],
-                    score=score, why="页面分块语义检索（RAG 语料）", official=1,
+                    score=score,
+                    why="页面分块语义检索（RAG 语料·同人）" if is_doujin else "页面分块语义检索（RAG 语料）",
+                    official=0 if is_doujin else 1,
                 )
             )
         return hits
@@ -270,6 +273,25 @@ class TouhouRetriever:
                 self._nicknames[str(row["nick"])] = str(row["canonical"])
         except sqlite3.OperationalError:
             self._nicknames = {}
+        # 同人作品的页面标题集合。段落路径必须据此决定 official——
+        # 之前硬编码 official=1，导致同人内容在语义检索里完全不受乘区压制，
+        # 而"同人必须做好有力区分"是主人一开始就定下的要求。
+        self._doujin_titles: set[str] = set()
+        for row in self.conn.execute(
+            """SELECT DISTINCT source_title FROM entities
+               WHERE kind IN ('album','doujin','doujin_game','track','spellcard_2nd')"""
+        ):
+            if row["source_title"]:
+                self._doujin_titles.add(str(row["source_title"]))
+
+    def _is_doujin_page(self, title: str) -> bool:
+        """页面是否属于同人作品（含其子页面，如 `<作品>/Omake`）。"""
+
+        parts = str(title).split("/")
+        for depth in range(len(parts), 0, -1):
+            if "/".join(parts[:depth]) in self._doujin_titles:
+                return True
+        return False
 
     @staticmethod
     def _short_forms(name: str) -> List[str]:

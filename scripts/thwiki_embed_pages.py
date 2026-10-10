@@ -45,6 +45,22 @@ _LINK_RE = re.compile(r"\[\[(?:[^\]|]*\|)?([^\]]+)\]\]")
 _FILE_RE = re.compile(r"\[\[(?:文件|File|Image):[^\]]*\]\]", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _REDIRECT_RE = re.compile(r"^\s*#(?:REDIRECT|重定向)", re.I)
+_KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
+KANA_LIMIT = 0.25   # 假名占比超过此值视为日文页
+
+
+def kana_ratio(text: str) -> float:
+    """假名占比——用来识别"未经翻译的日文页"。
+
+    为什么必须过滤：THBWiki 收录大量日本同人作品的原文（附带文档、Omake 等），
+    这些页面正文是纯日文。实测「琪露诺的能力是什么」的第 2 名就是
+    「氷精武勇録～Record Of Ice Fairy War./Omake」的日文段落。
+    中文问答机器人不该把这些当日文语料喂进向量库。
+    """
+
+    if not text:
+        return 0.0
+    return len(_KANA_RE.findall(text)) / len(text)
 
 
 def strip_templates(text: str) -> str:
@@ -98,19 +114,61 @@ def clean(wikitext: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def chunk_text(text: str) -> List[str]:
-    """定长切块 + 重叠。重叠是为了避免答案正好被切在边界上。"""
+def split_sentences(text: str) -> List[str]:
+    """按中文句末标点与换行分句。
 
-    if len(text) <= CHUNK:
-        return [text] if text else []
+    定长字符窗口会把句子拦腰切断——实测块首出现过「定的妖怪…」「想乡的结界分割…」
+    这种半个词开头的片段，检索到的"资料"读起来是残的，也会拉低向量质量。
+    """
+
+    parts = re.split(r"(?<=[。！？!?；;])|(?<=[…]{2})|\n+", text)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _split_long_sentence(sentence: str, limit: int) -> List[str]:
+    """单句超长时按逗号再切，避免出现远超上限的块。"""
+
+    if len(sentence) <= limit:
+        return [sentence]
+    pieces = re.split(r"(?<=[，,、：:])", sentence)
+    out: List[str] = []
+    current = ""
+    for piece in pieces:
+        if current and len(current) + len(piece) > limit:
+            out.append(current)
+            current = piece
+        else:
+            current += piece
+    if current:
+        out.append(current)
+    return out
+
+
+def chunk_text(text: str, max_chars: int = CHUNK, overlap_sentences: int = 1) -> List[str]:
+    """句子感知切块：按句子装箱，**绝不切断句子**；重叠按"句"而非"字符"。
+
+    重叠保留上一块的末尾若干整句，这样跨块检索不会丢上下文，
+    也不会像字符重叠那样产生半截句子。
+    """
+
+    sentences: List[str] = []
+    for sentence in split_sentences(text):
+        sentences.extend(_split_long_sentence(sentence, max_chars))
+
     chunks: List[str] = []
-    start = 0
-    while start < len(text):
-        piece = text[start : start + CHUNK].strip()
-        if len(piece) >= 80:
-            chunks.append(piece)
-        start += CHUNK - OVERLAP
-    return chunks
+    current: List[str] = []
+    current_len = 0
+    for sentence in sentences:
+        if current and current_len + len(sentence) > max_chars:
+            chunks.append("".join(current))
+            # 用末尾若干整句做重叠
+            current = current[-overlap_sentences:] if overlap_sentences else []
+            current_len = sum(len(s) for s in current)
+        current.append(sentence)
+        current_len += len(sentence)
+    if current:
+        chunks.append("".join(current))
+    return [c for c in chunks if len(c) >= 80]
 
 
 def load_provider(config_path: Path) -> Tuple[str, str]:
@@ -179,11 +237,18 @@ def main() -> int:
                     text = clean(wikitext)
                     if len(text) < MIN_PAGE_CHARS:
                         continue
+                    # 跳过以日文为主的页面（多为未翻译的日本同人作品原文）
+                    if kana_ratio(text) > KANA_LIMIT:
+                        continue
                     pages += 1
                     if args.limit_pages and pages > args.limit_pages:
                         break
                     url = "https://thwiki.cc/" + title.replace(" ", "_")
                     for index, piece in enumerate(chunk_text(text)):
+                        # **按块**再过滤一次：整页假名占比达标不代表每块都达标，
+                        # 中日混排页（如同人作品页）会带着日文段落一起过关。
+                        if kana_ratio(piece) > KANA_LIMIT:
+                            continue
                         pending.append((pageid, ns, title, url, index, piece))
 
                     # 攒够一批就嵌（边扫边嵌，避免把几十万块全放内存）
