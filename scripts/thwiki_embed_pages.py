@@ -46,7 +46,8 @@ _FILE_RE = re.compile(r"\[\[(?:文件|File|Image):[^\]]*\]\]", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _REDIRECT_RE = re.compile(r"^\s*#(?:REDIRECT|重定向)", re.I)
 _KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
-KANA_LIMIT = 0.25   # 假名占比超过此值视为日文页
+KANA_LIMIT = 0.25        # 整页判定：假名占比超过此值视为日文页
+SENT_KANA_LIMIT = 0.15   # 句级判定：中文句里假名很少，收紧到 15% 能剔掉日文短句/标题行
 
 
 def kana_ratio(text: str) -> float:
@@ -110,6 +111,7 @@ def clean(wikitext: str) -> str:
     text = _TAG_RE.sub(" ", text)
     text = re.sub(r"^[=*#:;{|].*$", " ", text, flags=re.M)
     text = re.sub(r"'{2,}", "", text)
+    text = re.sub(r"__[A-Z]+__", " ", text)   # 魔术字：__NOTOC__/__OMAKETXT__ 等
     text = re.sub(r"(?:缩略图|thumb|居中|\d+px)", " ", text, flags=re.I)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -142,6 +144,33 @@ def _split_long_sentence(sentence: str, limit: int) -> List[str]:
     if current:
         out.append(current)
     return out
+
+
+def prefer_chinese_section(text: str) -> str:
+    """双语页优先只保留中文段。
+
+    THBWiki 的中日对照页（如同人作品的 Omake）会用裸的 `ja` / `zh` 标记分段。
+    这是**结构性信号**，比按假名比例猜准得多：直接取首个 `zh` 标记之后的内容。
+    剩下的零散日文句再交给 chinese_only() 逐句剔。
+    """
+
+    if re.search(r"\bja\b", text) and re.search(r"\bzh\b", text):
+        parts = re.split(r"\bzh\b", text, maxsplit=1)
+        if len(parts) == 2:
+            return parts[1]
+    return text
+
+
+def chinese_only(text: str) -> str:
+    """逐句判定语言，只保留中文句。
+
+    为什么不能只按"整块假名占比"过滤：双语页（如同人作品的 Omake，前半日文、
+    后半中文译文）整块中文占比够高，块级阈值抓不住；而整块丢弃又会误伤后半段
+    真正的中文内容（实测那些块里就带着「○冰之妖精 琪露诺…」的中文段落）。
+    逐句过滤正好两头都不误伤。
+    """
+
+    return "".join(s for s in split_sentences(text) if kana_ratio(s) <= SENT_KANA_LIMIT)
 
 
 def chunk_text(text: str, max_chars: int = CHUNK, overlap_sentences: int = 1) -> List[str]:
@@ -235,10 +264,9 @@ def main() -> int:
                         continue
                     title = str(row.get("title") or "")
                     text = clean(wikitext)
+                    # 双语页先只取 zh 段，再逐句剔掉零散日文句，最后判长度
+                    text = chinese_only(prefer_chinese_section(text))
                     if len(text) < MIN_PAGE_CHARS:
-                        continue
-                    # 跳过以日文为主的页面（多为未翻译的日本同人作品原文）
-                    if kana_ratio(text) > KANA_LIMIT:
                         continue
                     pages += 1
                     if args.limit_pages and pages > args.limit_pages:
