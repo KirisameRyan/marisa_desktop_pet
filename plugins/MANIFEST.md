@@ -20,6 +20,7 @@
 | `marisa_cv/` | `marisa-team.marisa-cv` | 1.0.0 | extension | 本地东方角色识图：工具 `marisa_identify_character` + 指令 `/识图`，由本地分类服务（`service/serve.py`，端口 9881）完成 | `/识图` 与主动识图工具不可用 |
 | `marisa_voice/` | `marisa.voice` | 1.2.0 | extension | 注册 `marisa_say` 工具，让模型自己决定何时用本地 GPT-SoVITS 合成语音说出口 | 语音输出能力消失（纯文字聊天不受影响） |
 | `marisa_dsh/` | `marisa.dsh` | 1.0.0 | extension | DSH 桥：主人用 QQ 远程让 DeepSeek Harness 跑任务（`/dsh <任务>`、`/dsh 继续`），结果回传 | 无法通过 QQ 远程驱动 DSH（其余功能不受影响） |
+| `marisa_touhou/` | `marisa-team.marisa-touhou` | 0.1.0 | normal | 东方Project 知识库检索：暴露 `marisa_touhou_search` 工具，由模型判断意图后调用；插件做确定性检索（别名/俗称归一化 + SQL聚合·字段·档案章节·关系网·标签·RAG段落·FTS·实体向量八路召回 + 加权RRF），理解与作答交给模型。多跳问题由模型分多次调用 | 无法回答东方相关提问（其余功能不受影响）。**依赖**：知识库 `data/thwiki/thwiki.db`（自行构建，见 scripts/thwiki_*.py），缺库则工具报"知识库不存在" |
 
 `hello_world_plugin/` 是官方示例插件，保留入库，运行时可不要。
 
