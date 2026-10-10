@@ -42,26 +42,36 @@ TEMPLATES: Dict[str, str] = {
     "专辑曲目列表": "track",          # 另一种曲目行模板
     "同人专辑信息": "album",
     "官方游戏信息": "game",
-    "简单游戏信息": "game",
+    # 「简单游戏信息」是**同人游戏**（实测样例：空想幻闻录DEMO / Fly Marisa Fly!），
+    # 归到 game 会让官方作品列表被同人淹没
+    "简单游戏信息": "doujin_game",
     "同人志信息": "doujin",
-    "人物信息": "character",
+    # 注意：真正的角色信息框是「官方角色信息」，**不是**「人物信息」——
+    # 后者那 2061 条是同人作者/画师条目（实测样例：(YsY)s / 13.c.Gilbert）。
+    "官方角色信息": "character",
+    "人物信息": "person",            # 同人作者/画师，单独一类，别和角色混
     "符卡登场信息": "spellcard",
     "通用符卡信息": "spellcard",
     "符卡信息（二次）": "spellcard_2nd",
 }
 
+# 官方实体（角色/游戏/官方符卡）与同人实体分开标记：同人曲目有 22.9 万条，
+# 不区分的话检索会被同人内容淹没（实测：搜"红魔乡"返回的全是同人曲）。
+OFFICIAL_KINDS = {"game", "character", "spellcard"}
+
 # schema 字段 → 可能的模板参数名（按优先级）。第一个命中的就用。
 FIELD_MAP: Dict[str, List[str]] = {
-    "name_cn": ["名称", "中文名", "译名", "曲名", "标题"],
+    # 「人物名」属于 {{官方角色信息}}，其余属于专辑/曲目类信息框
+    "name_cn": ["名称", "中文名", "译名", "曲名", "标题", "人物名"],
     "name_jp": ["日文名", "原名称", "日文曲名"],
-    "name_romaji": ["罗马音"],
+    "name_romaji": ["罗马音", "日文读音"],
     "name_en": ["英文名", "英文曲名"],
     "circle": ["制作方", "社团", "所属社团"],
     "release_date": ["首发日期", "正式版发行日期", "信息公开日期", "发售日期", "日期"],
-    "release_event": ["展会", "会场"],
+    "release_event": ["展会", "会场", "登场展会"],
     "catalog_no": ["编号", "碟号", "制品版编号"],
     "price": ["会场售价", "通贩售价", "售价"],
-    "work_type": ["类型", "分类"],
+    "work_type": ["类型", "分类", "职业"],
     "duration": ["时长"],
     "composer": ["作曲"],
     "arranger": ["编曲", "再编曲"],
@@ -93,20 +103,29 @@ def iter_template_calls(text: str) -> Iterator[Tuple[str, Dict[str, str]]]:
             continue
         i = match.end()
         stop = min(len(text), i + _CALL_SCAN_LIMIT)
-        depth = 2
+        # depth 从 1 起（外层 {{ 已被 _NAME_RE 吃掉）。两个必须做对的细节：
+        # 1) 嵌套模板的 {{ }} 要**写回 buf**，否则值里的模板标记丢失，
+        #    后续清洗无从下手（实测产出「雾雨魔理沙能力|1|红魔乡color:#808080|…」）；
+        # 2) }} 使 depth 归 0 时必须**停止**，否则循环会越过本模板边界去吞后面的文本
+        #    （实测导致模板普查里字段计数虚高）。
+        depth = 1
         params: Dict[str, str] = {}
         buf: List[str] = []
         while i < stop and depth > 0:
             if text.startswith("{{", i):
                 depth += 1
+                buf.append("{{")
                 i += 2
                 continue
             if text.startswith("}}", i):
                 depth -= 1
                 i += 2
+                if depth == 0:
+                    break
+                buf.append("}}")
                 continue
             ch = text[i]
-            if ch == "|" and depth == 2:
+            if ch == "|" and depth == 1:
                 joined = "".join(buf)
                 if "=" in joined:
                     key, value = joined.split("=", 1)
@@ -139,11 +158,38 @@ _REF_RE = re.compile(r"<ref[\s\S]*?</ref>|<ref[^>]*/>", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
+def _strip_templates(text: str) -> str:
+    """按括号深度剥掉 {{...}}。
+
+    正则 `\\{\\{[^{}]*\\}\\}` 只能剥最内层，遇到嵌套（能力字段里的
+    `{{能力|1|红魔乡}}{{color:#808080|（红魔乡）}}`）会把残渣留下，
+    实测产出过「雾雨魔理沙能力|1|红魔乡color:#808080|（红魔乡）」这种脏值。
+    """
+
+    out: List[str] = []
+    depth = 0
+    i = 0
+    while i < len(text):
+        if text.startswith("{{", i):
+            depth += 1
+            i += 2
+            continue
+        if text.startswith("}}", i):
+            if depth:
+                depth -= 1
+            i += 2
+            continue
+        if depth == 0:
+            out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 def clean_value(value: str) -> str:
     """把字段值里的 wiki 标记清掉（值里常有 [[链接]]、<ref>、内嵌模板）。"""
 
     text = _REF_RE.sub("", value)
-    text = _TPL_RE.sub("", text)
+    text = _strip_templates(text)
     text = _LINK_RE.sub(r"\1", text)
     text = _TAG_RE.sub("", text)
     return re.sub(r"\s+", " ", text).strip().strip("，,")
@@ -152,17 +198,21 @@ def clean_value(value: str) -> str:
 def extract_summary(wikitext: str, limit: int = 400) -> str:
     """从页面里取"概述/简介"段落做摘要。
 
-    v1 不抓渲染版（那是后台 1-2 小时的任务），先用 wikitext 里最干净的概述段：
-    信息框之后、下一个二级标题之前的正文。
+    v1 不抓渲染版（那是后台 1-2 小时的任务），先用 wikitext 里最干净的概述段。
+    章节名不止「概述」：角色页用「角色信息」，作品页用「概述/简介/游戏介绍」，
+    所以这里一并试。
     """
 
     text = _REF_RE.sub("", wikitext)
-    match = re.search(r"==+\s*(?:概述|简介|介绍|游戏介绍)\s*==+\s*([\s\S]{0,2000}?)(?=\n==|\Z)", text)
+    match = re.search(
+        r"==+\s*(?:概述|简介|介绍|游戏介绍|作品简介|角色信息|人物信息)\s*==+\s*([\s\S]{0,3000}?)(?=\n==|\Z)",
+        text,
+    )
     if not match:
         return ""
     body = match.group(1)
     body = re.sub(r"\{\|[\s\S]*?\|\}", " ", body)  # 去掉表格
-    body = _TPL_RE.sub(" ", body)
+    body = _strip_templates(body)
     body = _LINK_RE.sub(r"\1", body)
     body = _TAG_RE.sub(" ", body)
     body = re.sub(r"^[=*#:;].*$", " ", body, flags=re.M)  # 去掉标题行/列表符
@@ -191,7 +241,8 @@ def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool
 
             CREATE TABLE entities (
               entity_id    INTEGER PRIMARY KEY,
-              kind         TEXT NOT NULL,      -- track/album/game/doujin/character/spellcard/spellcard_2nd
+              kind         TEXT NOT NULL,      -- track/album/game/doujin/person/character/spellcard/spellcard_2nd
+              official     INTEGER NOT NULL DEFAULT 0,  -- 1=官方 0=同人（检索默认该偏向官方）
               name_cn      TEXT, name_jp TEXT, name_romaji TEXT, name_en TEXT,
               parent_title TEXT,               -- 所在页面标题（曲目→所属专辑）
               circle       TEXT, release_date TEXT, release_event TEXT,
@@ -210,6 +261,10 @@ def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool
             CREATE INDEX idx_entities_kind ON entities(kind);
             CREATE INDEX idx_entities_name ON entities(name_cn);
             CREATE INDEX idx_entities_parent ON entities(parent_title);
+            -- 同一页会把同一个信息框调用多次（实测：雾雨魔理沙抽出两行），
+            -- 用唯一约束 + INSERT OR IGNORE 去重
+            CREATE UNIQUE INDEX idx_entities_unique
+              ON entities(source_pageid, kind, name_cn);
 
             CREATE TABLE aliases (alias TEXT PRIMARY KEY, target_title TEXT NOT NULL);
 
@@ -274,16 +329,17 @@ def build(data_dir: Path, db_path: Path, limit: Optional[int], show_fields: bool
                         rows += 1
                         continue
                     conn.execute(
-                        """INSERT INTO entities(
-                             kind, name_cn, name_jp, name_romaji, name_en, parent_title,
+                        """INSERT OR IGNORE INTO entities(
+                             kind, official, name_cn, name_jp, name_romaji, name_en, parent_title,
                              circle, release_date, release_event, catalog_no, price, work_type,
                              duration, composer, arranger, lyricist, vocal, performer, instrument,
                              original_for, genre, characters, owner, work, card_no, stage, description,
                              species, ability, location, first_work, summary, extra_json,
                              source_pageid, source_title, url)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
-                            kind, values["name_cn"], values["name_jp"], values["name_romaji"],
+                            kind, 1 if kind in OFFICIAL_KINDS else 0,
+                            values["name_cn"], values["name_jp"], values["name_romaji"],
                             values["name_en"], title,
                             values["circle"], values["release_date"], values["release_event"],
                             values["catalog_no"], values["price"], values["work_type"],
