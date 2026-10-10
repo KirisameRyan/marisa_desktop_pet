@@ -42,7 +42,7 @@ class RetrievalSectionConfig(PluginConfigBase):
     """[retrieval] 段。"""
 
     db_path: str = Field(default="data\\thwiki\\thwiki.db", description="知识库位置（相对仓库根目录）")
-    limit: int = Field(default=3, description="每次返回几条资料给模型")
+    limit: int = Field(default=5, description="每次返回几条资料给模型")
     max_chars: int = Field(default=900, description="单条资料最多给多少字")
     show_source: bool = Field(default=True, description="是否附出处链接")
 

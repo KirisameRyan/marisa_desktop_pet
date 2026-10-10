@@ -6,7 +6,7 @@ config_version = "0.1.0"
 # 知识库位置（相对仓库根目录）
 db_path = "data\\thwiki\\thwiki.db"
 # 每次返回几条资料给模型
-limit = 3
+limit = 5
 # 单条资料最多给多少字（角色档案/设定段落）
 max_chars = 900
 # 是否让模型看到出处链接

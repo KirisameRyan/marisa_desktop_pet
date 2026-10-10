@@ -1011,7 +1011,7 @@ class TouhouRetriever:
 
     # ─────────────────── 对外接口 ───────────────────
 
-    def search(self, question: str, limit: int = 3) -> List[Hit]:
+    def search(self, question: str, limit: int = 5) -> List[Hit]:
         normalized = self.normalize(question)
         entities = self.match_entities(normalized)
         kinds = self.route_kinds(normalized)
@@ -1064,7 +1064,7 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=Path("data") / "thwiki" / "thwiki.db")
     parser.add_argument("--questions", type=Path, default=None, help="题库 JSON")
     parser.add_argument("--q", type=str, default=None, help="单条查询")
-    parser.add_argument("--limit", type=int, default=3)
+    parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--out", type=Path, default=None, help="回归报告输出路径")
     args = parser.parse_args()
 
