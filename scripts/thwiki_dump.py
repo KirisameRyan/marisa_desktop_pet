@@ -169,45 +169,63 @@ def main() -> int:
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
-    # 文件名带上命名空间，主空间与附加空间的产物分开存，便于按用途筛选
-    ns_label = "-".join(str(n) for n in args.namespace)
-    pages_path = args.out / f"pages-ns{ns_label}.jsonl.gz"
     state_path = args.out / "state.json"
 
-    if pages_path.exists() and not args.resume:
-        _log(f"输出已存在：{pages_path}；要追加请加 --resume，否则先移走它")
-        return 2
+    started_all = time.time()
+    total_pages = 0
+    total_bytes = 0
 
-    mode = "ab" if args.resume else "wb"
-    started = time.time()
-    count = 0
-    bytes_written = 0
-
-    _log(f"开始抓取 → {pages_path}（batch={args.batch} sleep={args.sleep}s limit={args.limit or '全部'}）")
+    # gapnamespace 在本站是**单值参数**：重复传键时只有最后一个生效——实测
+    # `--namespace 506 508 512` 只抓到了 512（17875 页），506/508 一页没抓到。
+    # 所以这里逐个命名空间跑，每个空间一个独立产物文件，不再"安静地只做一部分"。
     with httpx.Client(timeout=60.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
-        with gzip.open(pages_path, mode) as handle:
-            for page in iter_pages(client, args.batch, args.sleep, args.limit, args.namespace):
-                line = json.dumps(page, ensure_ascii=False) + "\n"
-                raw = line.encode("utf-8")
-                handle.write(raw)
-                count += 1
-                bytes_written += len(raw)
-                if count % 200 == 0:
-                    elapsed = time.time() - started
-                    rate = count / elapsed if elapsed else 0.0
-                    _log(
-                        f"已抓 {count} 页 · {bytes_written / 1024 / 1024:.1f} MB · "
-                        f"{elapsed / 60:.1f} 分钟 · {rate:.1f} 页/秒"
-                    )
+        for ns in args.namespace:
+            pages_path = args.out / f"pages-ns{ns}.jsonl.gz"
+            if pages_path.exists() and not args.resume:
+                _log(f"输出已存在：{pages_path}；要追加请加 --resume，否则先移走它")
+                return 2
 
-    elapsed = time.time() - started
+            mode = "ab" if args.resume else "wb"
+            started = time.time()
+            count = 0
+            bytes_written = 0
+
+            _log(
+                f"开始抓取 ns={ns} → {pages_path}"
+                f"（batch={args.batch} sleep={args.sleep}s limit={args.limit or '全部'}）"
+            )
+            with gzip.open(pages_path, mode) as handle:
+                for page in iter_pages(client, args.batch, args.sleep, args.limit, [ns]):
+                    line = json.dumps(page, ensure_ascii=False) + "\n"
+                    raw = line.encode("utf-8")
+                    handle.write(raw)
+                    count += 1
+                    bytes_written += len(raw)
+                    if count % 200 == 0:
+                        elapsed = time.time() - started
+                        rate = count / elapsed if elapsed else 0.0
+                        _log(
+                            f"[ns={ns}] 已抓 {count} 页 · {bytes_written / 1024 / 1024:.1f} MB · "
+                            f"{elapsed / 60:.1f} 分钟 · {rate:.1f} 页/秒"
+                        )
+
+            elapsed = time.time() - started
+            _log(
+                f"[ns={ns}] 完成：{count} 页 · {bytes_written / 1024 / 1024:.1f} MB · "
+                f"用时 {elapsed / 60:.1f} 分钟"
+            )
+            total_pages += count
+            total_bytes += bytes_written
+
+    elapsed_all = time.time() - started_all
     state_path.write_text(
         json.dumps(
             {
                 "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "pages": count,
-                "uncompressed_mb": round(bytes_written / 1024 / 1024, 2),
-                "elapsed_sec": round(elapsed, 1),
+                "namespaces": args.namespace,
+                "pages": total_pages,
+                "uncompressed_mb": round(total_bytes / 1024 / 1024, 2),
+                "elapsed_sec": round(elapsed_all, 1),
                 "batch": args.batch,
                 "sleep_sec": args.sleep,
                 "limit": args.limit,
@@ -218,7 +236,10 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
-    _log(f"完成：{count} 页 · {bytes_written / 1024 / 1024:.1f} MB · 用时 {elapsed / 60:.1f} 分钟 → {pages_path}")
+    _log(
+        f"全部完成：{total_pages} 页 · {total_bytes / 1024 / 1024:.1f} MB · "
+        f"用时 {elapsed_all / 60:.1f} 分钟"
+    )
     return 0
 
 
