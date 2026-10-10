@@ -174,15 +174,23 @@ class TouhouRetriever:
                 continue
             chunk_id = int(self._chunk_ids[int(index)])
             row = self.conn.execute(
-                "SELECT title, url, text, chunk_no FROM page_chunks WHERE chunk_id=?", (chunk_id,)
+                "SELECT pageid, title, url, text, chunk_no FROM page_chunks WHERE chunk_id=?", (chunk_id,)
             ).fetchone()
             if row is None:
                 continue
+            # **邻块拼接**：F 类问题（"符卡规则是什么"）的完整解释横跨多个块，
+            # 只给命中块会得到半截答案——实测第14块末尾停在「名义上，符卡规则由」。
+            window = self.conn.execute(
+                "SELECT text FROM page_chunks WHERE pageid=? AND chunk_no BETWEEN ? AND ? ORDER BY chunk_no",
+                (row["pageid"], max(0, int(row["chunk_no"]) - 1), int(row["chunk_no"]) + 1),
+            ).fetchall()
+            merged = "".join(str(w["text"]) for w in window) if window else str(row["text"])
+            text = self._clip(merged, 1200)
             is_doujin = self._is_doujin_page(row["title"])
             hits.append(
                 Hit(
                     kind="passage", name=row["title"],
-                    detail={"片段（第%s块）" % row["chunk_no"]: self._clip(row["text"], 400)},
+                    detail={"片段（第%s块及邻块）" % row["chunk_no"]: text},
                     source=row["title"], url=row["url"],
                     score=score,
                     why="页面分块语义检索（RAG 语料·同人）" if is_doujin else "页面分块语义检索（RAG 语料）",
@@ -252,6 +260,22 @@ class TouhouRetriever:
                 )
             )
         return hits
+
+    def _intro_of(self, title: str, limit: int = 420) -> str:
+        """取某页开头的介绍文本（角色卡用）。
+
+        主人问「角色的角色卡里面有完整的介绍吗」——实测没有：八云紫的卡只有
+        日文名/种族/初登场，其余全空。角色卡必须带上页面开头的介绍正文，
+        否则模型只能看到一个干巴巴的字段表。
+        """
+
+        try:
+            rows = self.conn.execute(
+                "SELECT text FROM page_chunks WHERE title=? ORDER BY chunk_no LIMIT 2", (title,)
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return ""
+        return self._clip("".join(str(r["text"]) for r in rows), limit)
 
     # ─────────────────── 索引 ───────────────────
 
@@ -611,6 +635,8 @@ class TouhouRetriever:
                             "种族": row["species"], "职业": row["work_type"],
                             "所在地": row["location"], "初登场": row["first_work"],
                             "发行": row["release_date"],
+                            # 角色卡必须带介绍正文，否则模型只看到一张干巴巴的字段表
+                            "介绍": self._intro_of(str(row["source_title"] or "")),
                         },
                         source=row["source_title"], url=row["url"],
                         score=self._final(0.85, row["official"], True),
