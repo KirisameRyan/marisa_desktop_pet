@@ -182,7 +182,7 @@ class TouhouRetriever:
             hits.append(
                 Hit(
                     kind="passage", name=row["title"],
-                    detail={"片段（第%s块）" % row["chunk_no"]: row["text"][:220]},
+                    detail={"片段（第%s块）" % row["chunk_no"]: self._clip(row["text"], 400)},
                     source=row["title"], url=row["url"],
                     score=score,
                     why="页面分块语义检索（RAG 语料·同人）" if is_doujin else "页面分块语义检索（RAG 语料）",
@@ -190,6 +190,20 @@ class TouhouRetriever:
                 )
             )
         return hits
+
+    @staticmethod
+    def _clip(text: str, limit: int) -> str:
+        """在**句末**截断，而不是硬截字符。
+
+        踩过：显示层用 text[:220] 硬截，导致块看起来"没按句子切"——
+        其实是块本身完整，只是展示被砍在半句上。
+        """
+
+        if len(text) <= limit:
+            return text
+        window = text[:limit]
+        cut = max(window.rfind(ch) for ch in "。！？…；;")
+        return window[: cut + 1] if cut >= limit // 2 else window
 
     def _embed(self, text: str) -> Optional[Any]:
         if not self._embed_api or not getattr(self, "_vec_mat", None) is not None:
@@ -342,6 +356,11 @@ class TouhouRetriever:
         text = question
         # 俗称优先（长俗称先行，避免"紫妈"被"紫"先替换掉）
         for nick, canonical in sorted(self._nicknames.items(), key=lambda kv: -len(kv[0])):
+            # 关键守卫：俗称若是规范名的子串、且规范名已在句中，替换会自我污染。
+            # 实测俗称表里的单字条目（紫/蓝/橙/心/觉…）会把「八云紫住在哪里」
+            # 改成「八云八云紫住在哪里」，实体匹配随之失效。
+            if nick in canonical and canonical in text:
+                continue
             if nick in text:
                 text = text.replace(nick, canonical)
         for alias, target in self._aliases.items():
@@ -350,6 +369,67 @@ class TouhouRetriever:
         return text
 
     # ─────────────────── 关系网 / 标签检索 ───────────────────
+
+    # 字段 → 正文检索关键词。字段为空时用它在实体自己的页面里找答案。
+    FIELD_KEYWORDS: Dict[str, Tuple[str, ...]] = {
+        "location": ("居住", "住在", "住所", "住处", "所在地", "居于", "老家", "回到"),
+        "ability": ("能力",),
+        "species": ("种族", "妖怪", "人类", "妖精", "吸血鬼", "月人", "神明"),
+        "work_type": ("职业", "职务", "身份", "担任"),
+    }
+
+    def _field_from_page(self, entities: List[Tuple[str, str, int]], field_name: Optional[str]) -> List[Hit]:
+        """字段为空时，到该实体**自己的页面正文**里找答案。
+
+        为什么不能只靠加正则：模板里有些字段根本没有参数（角色的「所在地」），
+        有些句式千变万化——实测八云紫页面写的是「在幻想乡的住所中睡觉」，
+        而模式表里的「居住在/住在/所在地」全都匹配不上。
+        固定模式列表永远追不上自然语言，所以改成"字段关键词 × 该页正文句"的通用检索。
+
+        踩过：之前只回一条「未收录字段 location（需渲染补全）」，等于告诉用户"我不知道"，
+        而答案其实就写在她自己的页面里。
+        """
+
+        keywords = self.FIELD_KEYWORDS.get(field_name or "")
+        if not keywords:
+            return []
+        hits: List[Hit] = []
+        for _name, _kind, entity_id in entities[:2]:
+            row = self.conn.execute(
+                "SELECT source_title, official FROM entities WHERE entity_id=?", (entity_id,)
+            ).fetchone()
+            if row is None or not row["source_title"]:
+                continue
+            title = str(row["source_title"])
+            try:
+                chunks = self.conn.execute(
+                    "SELECT text FROM page_chunks WHERE title=? OR title LIKE ? LIMIT 40",
+                    (title, title + "/%"),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+            seen: set[str] = set()
+            for chunk in chunks:
+                for sentence in re.split(r"(?<=[。！？])", str(chunk["text"])):
+                    sentence = sentence.strip()
+                    if not (6 <= len(sentence) <= 200) or sentence in seen:
+                        continue
+                    if not any(word in sentence for word in keywords):
+                        continue
+                    seen.add(sentence)
+                    hits.append(
+                        Hit(
+                            kind="fact", name=title,
+                            detail={field_name or "": sentence[:170]},
+                            source=title,
+                            url="https://thwiki.cc/" + title.replace(" ", "_"),
+                            score=self._final(0.88, row["official"], True),
+                            why=f"字段为空 → 在该实体页面正文检索「{field_name}」",
+                            official=row["official"],
+                        )
+                    )
+                    break   # 每个实体先给最相关的一句，避免刷屏
+        return hits
 
     def _char_hit(self, name: str, why: str, base: float = 0.92) -> Optional[Hit]:
         """把一个人物名变成一条结果（关系路共用）。"""
@@ -516,7 +596,8 @@ class TouhouRetriever:
         #     因为此时八云紫是**主语**，答案另有其人。
         has_field_intent = field_name is not None
         has_rel_intent = any(w in question for w in ("成员", "式神", "弟子", "住在", "归属", "关系", "侍奉"))
-        if not has_field_intent and not has_rel_intent:
+        has_kind_intent = bool(kinds)   # 问的是曲/符卡/成员 → 答案不是"这个实体本身"
+        if not has_field_intent and not has_rel_intent and not has_kind_intent:
             for _name, _kind, entity_id in entities[:2]:
                 row = self.conn.execute("SELECT * FROM entities WHERE entity_id=?", (entity_id,)).fetchone()
                 if row is None:
@@ -537,8 +618,9 @@ class TouhouRetriever:
                     )
                 )
 
-        # (a) 实体 + 字段 → 单点精确查询
+        # (a) 实体 + 字段 → 单点精确查询；字段为空则转该实体页面正文检索
         if entities and field_name:
+            missing = False
             for _name, _kind, entity_id in entities[:3]:
                 row = self.conn.execute(
                     f"SELECT * FROM entities WHERE entity_id=?", (entity_id,)
@@ -546,18 +628,24 @@ class TouhouRetriever:
                 if row is None:
                     continue
                 value = (row[field_name] or "").strip()
+                if not value:
+                    missing = True
+                    continue
                 hits.append(
                     Hit(
                         kind=row["kind"],
                         name=row["name_cn"] or row["name_jp"] or "",
-                        detail={field_name: value} if value else {"未收录字段": field_name},
+                        detail={field_name: value},
                         source=row["source_title"],
                         url=row["url"],
-                        score=self._final(FIELD_HIT if value else 0.35, row["official"], True),
-                        why=f"SQL字段命中 {field_name}" if value else f"实体命中但 {field_name} 为空（需渲染补全）",
+                        score=self._final(FIELD_HIT, row["official"], True),
+                        why=f"SQL字段命中 {field_name}",
                         official=row["official"],
                     )
                 )
+            if missing and not hits:
+                # 字段在模板里没有参数（如角色的所在地）→ 去页面正文里找，而不是回一句"我不知道"
+                hits.extend(self._field_from_page(entities, field_name))
 
         # (b) 作品 + 曲目意图 → 列出该作品的官方曲目
         if kinds and "official_track" in kinds:
@@ -671,23 +759,26 @@ class TouhouRetriever:
         entities = self.match_entities(normalized)
         kinds = self.route_kinds(normalized)
 
-        # 五个通道各自召回，再按 **RRF（排名倒数融合）** 合并。
+        # 六个通道各自召回，再按 **加权 RRF（排名倒数融合）** 合并。
         # 为什么不能直接加分数：bm25 是负值、余弦是 0~1、字段命中是常数 1.0——
         # 量纲完全不可比，相加会让某个通道淹没其它通道。RRF 只看排名，天然公平。
+        # 为什么还要**加权**：等权时"精确答案"（SQL 字段/关系/标签）只有单通道 1/61，
+        # 而噪声内容常同时出现在 FTS+向量两路 → 2/61 反而压过精确答案。
+        # 实测「八云紫住在哪里」正确答句被两条符卡挤出前二，就是这个问题。
         paths = [
-            self._structured(normalized, entities),
-            self._by_relation(normalized),
-            self._by_tag(normalized),
-            self._fts(normalized, kinds, entities),
-            self._vector(normalized),
-            self._chunk_vector(normalized),   # RAG 语料：设定/背景/剧情段落
+            (3.0, self._structured(normalized, entities)),   # SQL 字段 / 正文事实：最精确
+            (2.5, self._by_relation(normalized)),            # 关系网
+            (2.0, self._by_tag(normalized)),                 # 标签过滤
+            (1.2, self._chunk_vector(normalized)),           # RAG 语料段落
+            (1.0, self._fts(normalized, kinds, entities)),   # 字面召回：噪声最多，权重最低
+            (1.0, self._vector(normalized)),                 # 实体向量
         ]
         agg: Dict[Tuple[str, str], List[Any]] = {}
-        for hits in paths:
+        for weight, hits in paths:
             for rank, hit in enumerate(sorted(hits, key=lambda h: -h.score), 1):
                 key = (hit.kind, hit.name)
                 slot = agg.setdefault(key, [hit, 0.0])
-                slot[1] += 1.0 / (RRF_K + rank)
+                slot[1] += weight / (RRF_K + rank)
 
         ranked: List[Hit] = []
         for hit, rrf in agg.values():

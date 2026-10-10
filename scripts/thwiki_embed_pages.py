@@ -45,6 +45,7 @@ _LINK_RE = re.compile(r"\[\[(?:[^\]|]*\|)?([^\]]+)\]\]")
 _FILE_RE = re.compile(r"\[\[(?:文件|File|Image):[^\]]*\]\]", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _REDIRECT_RE = re.compile(r"^\s*#(?:REDIRECT|重定向)", re.I)
+_CAT_RE = re.compile(r"\[\[\s*(?:分类|Category)\s*:[^\]]*\]\]", re.I)
 _KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
 KANA_LIMIT = 0.25        # 整页判定：假名占比超过此值视为日文页
 SENT_KANA_LIMIT = 0.15   # 句级判定：中文句里假名很少，收紧到 15% 能剔掉日文短句/标题行
@@ -106,6 +107,9 @@ def clean(wikitext: str) -> str:
     text = _REF_RE.sub(" ", wikitext)
     text = _TABLE_RE.sub(" ", text)
     text = strip_templates(text)
+    # 分类必须在通用链接处理**之前**剥掉：否则 [[分类:同人音乐人]] 会先被
+    # _LINK_RE 变成裸的「分类:同人音乐人」，然后混进正文尾巴（实测块尾大量出现）。
+    text = _CAT_RE.sub(" ", text)
     text = _FILE_RE.sub(" ", text)
     text = _LINK_RE.sub(r"\1", text)
     text = _TAG_RE.sub(" ", text)
