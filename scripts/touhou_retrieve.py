@@ -261,6 +261,55 @@ class TouhouRetriever:
             )
         return hits
 
+    # 问句里出现这些词 → 去角色档案的对应章节取答案。
+    # 角色档案（character_sections）由 thwiki_character_profile.py 从渲染后的
+    # 角色页章节解析而来：外貌 139 / 人际关系 120 / 登场剧情 136 / 设定文档 153…
+    # 之前这些内容**完全没有对应字段**，角色卡只有种族/能力几个参数。
+    SECTION_INTENTS: Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...] = (
+        (("外貌", "长相", "样子", "外表", "发色", "穿着"), ("外貌特征", "外貌")),
+        (("人际关系", "和谁", "式神", "主人", "弟子", "朋友", "关系"), ("人际关系",)),
+        (("剧情", "故事", "经历", "干了什么", "做过什么"), ("登场剧情", "设定文档")),
+        (("生活", "日常", "平时"), ("生活状况",)),
+        (("能力",), ("角色能力",)),
+    )
+
+    def _by_section(self, question: str, entities: List[Tuple[str, str, int]]) -> List[Hit]:
+        """角色档案章节路：外貌 / 人际关系 / 登场剧情 / 生活状况 / 角色能力。"""
+
+        hits: List[Hit] = []
+        for words, sections in self.SECTION_INTENTS:
+            if not any(word in question for word in words):
+                continue
+            for _name, kind, entity_id in entities[:2]:
+                if kind != "character":
+                    continue
+                entity = self.conn.execute(
+                    "SELECT name_cn, source_title, url, official FROM entities WHERE entity_id=?",
+                    (entity_id,),
+                ).fetchone()
+                if entity is None:
+                    continue
+                for section in sections:
+                    try:
+                        row = self.conn.execute(
+                            "SELECT text FROM character_sections WHERE entity_id=? AND section LIKE ? LIMIT 1",
+                            (entity_id, f"%{section}%"),
+                        ).fetchone()
+                    except sqlite3.OperationalError:
+                        return hits   # 还没跑角色档案脚本
+                    if row is None:
+                        continue
+                    hits.append(
+                        Hit(
+                            kind="character", name=entity["name_cn"],
+                            detail={section: self._clip(str(row["text"]), 600)},
+                            source=entity["source_title"], url=entity["url"],
+                            score=self._final(0.9, entity["official"], True),
+                            why=f"角色档案章节「{section}」", official=entity["official"],
+                        )
+                    )
+        return hits
+
     def _intro_of(self, title: str, limit: int = 420) -> str:
         """取某页开头的介绍文本（角色卡用）。
 
@@ -793,6 +842,7 @@ class TouhouRetriever:
         # 实测「八云紫住在哪里」正确答句被两条符卡挤出前二，就是这个问题。
         paths = [
             (3.0, self._structured(normalized, entities)),   # SQL 字段 / 正文事实：最精确
+            (3.0, self._by_section(normalized, entities)),   # 角色档案章节（外貌/关系/剧情）
             (2.5, self._by_relation(normalized)),            # 关系网
             (2.0, self._by_tag(normalized)),                 # 标签过滤
             (1.2, self._chunk_vector(normalized)),           # RAG 语料段落
