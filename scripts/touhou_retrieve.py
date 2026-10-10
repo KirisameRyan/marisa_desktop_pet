@@ -148,6 +148,62 @@ class TouhouRetriever:
             if id_path.exists():
                 self._chunk_mat = np.load(chunk_mat, mmap_mode="r")
                 self._chunk_ids = np.load(id_path)
+        # 角色档案章节向量：只有 3,463 条（约 14MB），直接全量载入
+        sec_ids: List[int] = []
+        sec_mats: List[Any] = []
+        try:
+            for row in self.conn.execute("SELECT rowid, vec FROM section_vectors"):
+                sec_ids.append(int(row["rowid"]))
+                sec_mats.append(np.frombuffer(row["vec"], dtype="<f4"))
+        except sqlite3.OperationalError:
+            return
+        if sec_ids:
+            sec_matrix = np.vstack(sec_mats)
+            sec_norms = np.linalg.norm(sec_matrix, axis=1, keepdims=True)
+            self._sec_ids = sec_ids
+            self._sec_mat = sec_matrix / np.where(sec_norms == 0, 1.0, sec_norms)
+
+    def _by_section_semantic(self, question: str, topk: int = 3) -> List[Hit]:
+        """角色档案**语义**检索。
+
+        为什么必须补：`_by_section` 走 SQL LIKE，是关键词匹配——问法一变
+        （"她长什么样" vs 章节名"外貌特征"）就找不到。而角色档案里
+        外貌/人际关系/登场剧情/设定文档/符卡列表共 4,776 条内容此前完全没嵌入。
+        """
+
+        if getattr(self, "_sec_mat", None) is None:
+            return []
+        vec = self._embed(question)
+        if vec is None:
+            return []
+        norm = self._np.linalg.norm(vec) or 1.0
+        sims = self._sec_mat @ (vec / norm)
+        count = min(topk, sims.shape[0])
+        top = self._np.argpartition(-sims, count - 1)[:count]
+        top = top[self._np.argsort(-sims[top])]
+        hits: List[Hit] = []
+        for index in top:
+            score = float(sims[index])
+            if score < 0.40:      # 语义太弱不要
+                continue
+            row = self.conn.execute(
+                """SELECT cs.section, cs.text, e.name_cn, e.source_title, e.url, e.official
+                   FROM character_sections cs JOIN entities e ON e.entity_id = cs.entity_id
+                   WHERE cs.rowid=?""",
+                (self._sec_ids[int(index)],),
+            ).fetchone()
+            if row is None:
+                continue
+            hits.append(
+                Hit(
+                    kind="character", name=row["name_cn"],
+                    detail={row["section"]: self._clip(str(row["text"]), 600)},
+                    source=row["source_title"], url=row["url"],
+                    score=score, why=f"角色档案语义检索「{row['section']}」",
+                    official=row["official"],
+                )
+            )
+        return hits
 
     def _chunk_vector(self, question: str, topk: int = 6) -> List[Hit]:
         """页面分块语义检索：返回**文本片段**（资料本身），而不是实体名。
@@ -846,7 +902,8 @@ class TouhouRetriever:
         # 实测「八云紫住在哪里」正确答句被两条符卡挤出前二，就是这个问题。
         paths = [
             (3.0, self._structured(normalized, entities)),   # SQL 字段 / 正文事实：最精确
-            (3.0, self._by_section(normalized, entities)),   # 角色档案章节（外貌/关系/剧情）
+            (3.0, self._by_section(normalized, entities)),   # 角色档案章节（关键词命中）
+            (2.8, self._by_section_semantic(normalized)),    # 角色档案章节（语义命中）
             (2.5, self._by_relation(normalized)),            # 关系网
             (2.0, self._by_tag(normalized)),                 # 标签过滤
             (1.2, self._chunk_vector(normalized)),           # RAG 语料段落
