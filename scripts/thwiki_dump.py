@@ -40,9 +40,14 @@ BATCH = 50
 
 
 def _log(msg: str) -> None:
-    """带时间戳打到 stderr（进度看得见，也不污染将来的管道用法）。"""
+    """带时间戳打到 **stdout**。
 
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+    刻意不用 stderr：PowerShell 会把原生命令的 stderr 当成错误记录，导致后台任务
+    明明跑完却以退出码 1 收场（踩过：31 分钟的全量抓取打印了"完成"却报 exit 1）。
+    进度和结果都走 stdout 就没这个问题。
+    """
+
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def fetch_batch(
@@ -50,6 +55,7 @@ def fetch_batch(
     gapcontinue: Optional[str],
     rvcontinue: Optional[str],
     batch: int,
+    namespaces: List[int],
     retries: int = 4,
 ) -> Dict[str, Any]:
     """取一批页面（含最新版本的原始 wikitext）。"""
@@ -59,7 +65,10 @@ def fetch_batch(
         "format": "json",
         "formatversion": "2",
         "generator": "allpages",
-        "gapnamespace": "0",
+        # gapnamespace 是「多值参数」：必须**重复传键**
+        # （gapnamespace=512&gapnamespace=508），不能用 | 连接——踩过，
+        # 用 | 会被 API 判为 badvalue: Unrecognized value。
+        "gapnamespace": [int(n) for n in namespaces],
         "gaplimit": str(batch),
         # 只要最新一版的正文；rvslots=main 是 MW1.32+ 的写法
         "prop": "revisions",
@@ -95,7 +104,13 @@ def fetch_batch(
     raise RuntimeError(f"批次请求连续失败：{last_error}")
 
 
-def iter_pages(client: httpx.Client, batch: int, sleep_sec: float, max_pages: Optional[int]) -> Iterator[Dict[str, Any]]:
+def iter_pages(
+    client: httpx.Client,
+    batch: int,
+    sleep_sec: float,
+    max_pages: Optional[int],
+    namespaces: List[int],
+) -> Iterator[Dict[str, Any]]:
     """按 allpages 顺序产出页面记录，直到取完或达到上限。"""
 
     gapcontinue: Optional[str] = None
@@ -103,7 +118,7 @@ def iter_pages(client: httpx.Client, batch: int, sleep_sec: float, max_pages: Op
     emitted = 0
 
     while True:
-        data = fetch_batch(client, gapcontinue, rvcontinue, batch)
+        data = fetch_batch(client, gapcontinue, rvcontinue, batch, namespaces)
         query = data.get("query") or {}
         pages: List[Dict[str, Any]] = query.get("pages") or []
 
@@ -143,11 +158,20 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=BATCH, help="每批页数（默认 50）")
     parser.add_argument("--sleep", type=float, default=0.7, help="每次请求间隔秒数（默认 0.7，别调更快）")
     parser.add_argument("--limit", type=int, default=None, help="最多抓多少页（小样验证用）")
+    parser.add_argument(
+        "--namespace",
+        type=int,
+        nargs="+",
+        default=[0],
+        help="要抓的命名空间（默认 0=主；本站还有 506=附带文档 508=游戏对话 512=歌词）",
+    )
     parser.add_argument("--resume", action="store_true", help="追加到已有文件（断点续跑）")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
-    pages_path = args.out / "pages.jsonl.gz"
+    # 文件名带上命名空间，主空间与附加空间的产物分开存，便于按用途筛选
+    ns_label = "-".join(str(n) for n in args.namespace)
+    pages_path = args.out / f"pages-ns{ns_label}.jsonl.gz"
     state_path = args.out / "state.json"
 
     if pages_path.exists() and not args.resume:
@@ -162,7 +186,7 @@ def main() -> int:
     _log(f"开始抓取 → {pages_path}（batch={args.batch} sleep={args.sleep}s limit={args.limit or '全部'}）")
     with httpx.Client(timeout=60.0, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as client:
         with gzip.open(pages_path, mode) as handle:
-            for page in iter_pages(client, args.batch, args.sleep, args.limit):
+            for page in iter_pages(client, args.batch, args.sleep, args.limit, args.namespace):
                 line = json.dumps(page, ensure_ascii=False) + "\n"
                 raw = line.encode("utf-8")
                 handle.write(raw)
