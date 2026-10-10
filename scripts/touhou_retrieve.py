@@ -95,6 +95,7 @@ class TouhouRetriever:
         self._aliases: Dict[str, str] = {}
         self._vectors: Dict[int, Any] = {}             # entity_id → 向量
         self._embed_api: Optional[Tuple[str, str]] = None
+        self._chunk_mat_path = db_path.parent / "chunk_vectors.npy"
         self._load_index()
         self._load_vectors(config_path or (Path("config") / "model_config.toml"))
 
@@ -140,6 +141,52 @@ class TouhouRetriever:
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
         self._vec_mat = matrix / np.where(norms == 0, 1.0, norms)
         self._np = np
+        # 页面分块向量（真正的 RAG 语料）：用 memmap 读，避免 700MB 常驻内存
+        chunk_mat = getattr(self, "_chunk_mat_path", None)
+        if chunk_mat and chunk_mat.exists():
+            id_path = chunk_mat.with_name("chunk_ids.npy")
+            if id_path.exists():
+                self._chunk_mat = np.load(chunk_mat, mmap_mode="r")
+                self._chunk_ids = np.load(id_path)
+
+    def _chunk_vector(self, question: str, topk: int = 6) -> List[Hit]:
+        """页面分块语义检索：返回**文本片段**（资料本身），而不是实体名。
+
+        这是"设定/背景"类问题的唯一解：「幻想乡」「符卡规则」「博丽大结界」
+        「月面战争」这些内容不是实体，实体向量层根本覆盖不到，
+        所以之前报告里绝大多数命中仍是 FTS 字面召回。
+        """
+
+        if getattr(self, "_chunk_mat", None) is None:
+            return []
+        vec = self._embed(question)
+        if vec is None:
+            return []
+        norm = self._np.linalg.norm(vec) or 1.0
+        sims = self._chunk_mat @ (vec / norm)      # 向量已在导出时归一化 → 点积即余弦
+        count = min(topk, sims.shape[0])
+        top = self._np.argpartition(-sims, count - 1)[:count]
+        top = top[self._np.argsort(-sims[top])]
+        hits: List[Hit] = []
+        for index in top:
+            score = float(sims[index])
+            if score < 0.35:      # 语义太弱不要，避免塞无关段落
+                continue
+            chunk_id = int(self._chunk_ids[int(index)])
+            row = self.conn.execute(
+                "SELECT title, url, text, chunk_no FROM page_chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                continue
+            hits.append(
+                Hit(
+                    kind="passage", name=row["title"],
+                    detail={"片段（第%s块）" % row["chunk_no"]: row["text"][:220]},
+                    source=row["title"], url=row["url"],
+                    score=score, why="页面分块语义检索（RAG 语料）", official=1,
+                )
+            )
+        return hits
 
     def _embed(self, text: str) -> Optional[Any]:
         if not self._embed_api or not getattr(self, "_vec_mat", None) is not None:
@@ -611,6 +658,7 @@ class TouhouRetriever:
             self._by_tag(normalized),
             self._fts(normalized, kinds, entities),
             self._vector(normalized),
+            self._chunk_vector(normalized),   # RAG 语料：设定/背景/剧情段落
         ]
         agg: Dict[Tuple[str, str], List[Any]] = {}
         for hits in paths:

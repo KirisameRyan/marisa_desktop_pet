@@ -161,27 +161,36 @@ _TAG_RE = re.compile(r"<[^>]+>")
 def _strip_templates(text: str) -> str:
     """按括号深度剥掉 {{...}}。
 
-    正则 `\\{\\{[^{}]*\\}\\}` 只能剥最内层，遇到嵌套（能力字段里的
-    `{{能力|1|红魔乡}}{{color:#808080|（红魔乡）}}`）会把残渣留下，
-    实测产出过「雾雨魔理沙能力|1|红魔乡color:#808080|（红魔乡）」这种脏值。
+    正则 `\\{\\{[^{}]*\\}\\}` 只能剥最内层，遇到嵌套会把残渣留下；
+    更严重的是**未闭合的 `{{`**：THBWiki 页面里很常见（注释、nowiki、占位符），
+    若 depth 永不归零就会把整页后半段删掉——实测 74,429 个候选页全被洗成空，
+    直接导致正文索引（FTS）和分块嵌入双双失效。
     """
 
     out: List[str] = []
     depth = 0
+    open_at = -1
     i = 0
     while i < len(text):
         if text.startswith("{{", i):
+            if depth == 0:
+                open_at = i
             depth += 1
             i += 2
             continue
         if text.startswith("}}", i):
             if depth:
                 depth -= 1
+                if depth == 0:
+                    open_at = -1
             i += 2
             continue
         if depth == 0:
             out.append(text[i])
         i += 1
+    if depth > 0 and open_at >= 0:
+        # 未闭合：保留 `{{` 之后的原文（只去掉那两个花括号），别丢整页
+        out.append(text[open_at + 2 :])
     return "".join(out)
 
 
