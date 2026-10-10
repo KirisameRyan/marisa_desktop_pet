@@ -79,6 +79,42 @@ class TouhouPlugin(MaiBotPlugin):
 
     # ─────────────────── 生命周期 ───────────────────
 
+    async def on_load(self) -> None:
+        """插件加载。
+
+        宿主对每个插件都**强制要求覆写本方法**：plugin_loader 里校验
+        `type(instance).on_load is MaiBotPlugin.on_load`，没覆写就抛
+        `[E_PLUGIN_NOT_FOUND] 插件 xxx 必须实现 on_load()`——实测就是这个
+        导致插件被拒绝加载。
+
+        这里**不预加载知识库**：770MB 的库读起来要几秒，会拖慢 MaiBot 启动。
+        检索器首次被调用时再懒加载。这里只确认库文件在不在，好让问题尽早暴露。
+        """
+
+        db_path = Path(self.config.retrieval.db_path)
+        if not db_path.is_absolute():
+            db_path = _PROJECT_ROOT / db_path
+        if db_path.exists():
+            self.ctx.logger.info(
+                "[marisa_touhou] 已加载：知识库 %s（%.0f MB），返回 %s 条资料",
+                db_path, db_path.stat().st_size / 1024 / 1024, self.config.retrieval.limit,
+            )
+        else:
+            self.ctx.logger.warning(
+                "[marisa_touhou] 知识库不存在：%s —— 工具会报错，请先跑 scripts/thwiki_build_db.py 等构建脚本",
+                db_path,
+            )
+
+    async def on_unload(self) -> None:
+        """插件卸载：关掉 SQLite 连接。"""
+
+        if self._retriever is not None:
+            try:
+                self._retriever.conn.close()
+            except Exception as exc:   # noqa: BLE001 - 卸载阶段的清理失败不该阻断退出
+                self.ctx.logger.warning("[marisa_touhou] 关闭知识库连接失败: %s", exc)
+            self._retriever = None
+
     async def on_config_update(self, scope: str, config_data: Dict[str, Any], version: str) -> None:
         """配置热更新。
 
