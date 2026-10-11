@@ -114,9 +114,18 @@ class MaaDriver:
             self.screencap_method, self.input_method, self.input_method,
         )
         if not ok:
+            # 别急着甩锅给截图方式：AsstAttachWindow 返回 0 的原因有好几种，
+            # MAA 会把真正的原因写进它自己的日志（D:\MAA\debug\asst.log）。
+            # 实测踩过的两种：
+            #   1) 未提权 → UIPI 拦掉 PrintWindow/PostMessage（日志里是 error 5）
+            #   2) 窗口分辨率不是标准 16:9 → MAA 日志报
+            #      "Cannot create controller proxy: Unsupported resolution"
+            #      （官方要求：游戏分辨率需为 16:9，推荐 1280x720 或 1920x1080）
             raise RuntimeError(
-                f"附着窗口失败（截图方式={self.screencap_method}）——"
-                "PrintWindow 会被游戏拒绝(error 5)，建议用 FramePool=2"
+                "附着窗口失败。请检查 D:\\MAA\\debug\\asst.log 里的真实原因，常见两种：\n"
+                "  ① 未以管理员身份运行（UIPI 会拦掉窗口消息，日志里 error=5）\n"
+                "  ② 游戏窗口不是标准 16:9 分辨率（官方要求 1280x720 / 1920x1080；\n"
+                "     日志里会写 'Unsupported resolution'。改过系统缩放后需要重启游戏让窗口重建）"
             )
         version = self._asst.get_version()
         self._emit({"type": "connected", "version": version, "hwnd": self._hwnd})
