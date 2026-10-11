@@ -45,6 +45,12 @@ def main() -> int:
     parser.add_argument("--minutes", type=float, default=6.0, help="最多跑多少分钟")
     parser.add_argument("--task", default="", help="任务类型，留空=StartUp+Fight；生息演算填 Reclamation")
     parser.add_argument("--params", default="", help="任务参数 JSON，如 '{\"theme\":\"RelaunchAnchor\",\"mode\":\"RA4\"}'")
+    parser.add_argument("--queue", default="",
+                        help="一次下发多种任务：[{\"type\":\"Depot\",\"params\":{}}, ...]。"
+                             "用于测试「首页 → 各功能页」的导航链路")
+    parser.add_argument("--queue-file", default="",
+                        help="从文件读任务队列 JSON。**推荐用这个** —— 经 .bat 传 JSON 会被"
+                             "cmd 的引号规则搞坏（踩过），落成文件再传路径最稳")
     parser.add_argument("--repeat", type=int, default=1, help="把任务重复入队几次（刷几遍）")
     parser.add_argument("--startup", action="store_true",
                         help="先入队 StartUp 回到游戏主界面。生息演算等任务需要从主界面开始导航"
@@ -71,7 +77,23 @@ def main() -> int:
         (args.out / "00_before.png").write_bytes(shot)
         print(f"[2/4] 基线截图 {len(shot)} 字节", flush=True)
 
-    if args.task:
+    queue_spec = args.queue or (Path(args.queue_file).read_text(encoding="utf-8")
+                                if args.queue_file else "")
+    if queue_spec:
+        # 一次下发多种任务：用来测「首页 → 各功能页」的导航。
+        # 每个任务自己会从首页导航过去、做完再回来，所以能同时验证多个入口。
+        spec = json.loads(queue_spec)
+        queued = []
+        for item in spec:
+            type_name = str(item["type"])
+            params = item.get("params") or {}
+            task_id = driver.append_task(type_name, params)
+            queued.append((type_name, task_id))
+            print(f"      {type_name:<12} → task_id={task_id}  {'✅' if task_id else '❌ 被拒'}  {params}", flush=True)
+        if not all(tid for _, tid in queued):
+            print("      ❌ 有任务入队失败", flush=True)
+            return 2
+    elif args.task:
         # 指定了任务类型（如 Reclamation=生息演算）就直接跑它，不掺 StartUp——
         # 除非显式 --startup：生息演算的导航阶段要求从「主界面」出发
         # （MAA 日志里期望识别 Tales@RA@Navigation-FromMainInterface），
