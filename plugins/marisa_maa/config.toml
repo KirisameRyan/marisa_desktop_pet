@@ -10,23 +10,26 @@ window_title = "明日方舟"
 # 截图方式：2=FramePool 是实测唯一完整干净且抗遮挡的；
 #   1=GDI 抓到的是压在游戏上的别的窗口 · 8=DXGI桌面 被遮挡处会串窗 · 16=PrintWindow 游戏拒绝(error 5)
 screencap_method = 2
-# 输入方式（这是个坑里爬出来的结论，别随便改）：
+# 输入方式（这个值是三轮排查换来的，改动前先看下面）：
 #
-#   1 = Seize          真实输入（SendInput）。**不受 UIPI 限制**，代价是接管鼠标键盘。
-#   2 = SendMessage    靠窗口消息投递
-#   4 = PostMessage    同上
-#  32 = SendMessageWithCursorPos   先移光标再投递（看似优雅，但**同样被 UIPI 拦**）
-#  64 = PostMessageWithCursorPos   同上
+#   1 = Seize                        真实输入(SendInput)。**发给前台窗口**——
+#                                    挂机时你若在用别的程序，点击全跑到那个窗口去了。
+#                                    实测：提权后跑 Fight，同一个按钮点了 12 次游戏没反应，
+#                                    最后 TaskChainError（游戏窗口不是前台）。
+#  64 = PostMessageWithCursorPos     先把光标移到目标位置再投递消息。**不需要窗口在前台**，
+#                                    挂机时能正常用电脑。前提是进程权限不低于游戏（见下）。
+#   2/4/32 = SendMessage / PostMessage / SendMessageWithCursorPos   同理，风格差异
 #
-# 实测：本机明日方舟 PC 客户端进程的完整性级别高于 MaiBot（非管理员），
-# Windows 的 UIPI 会拦下所有跨完整性级别的窗口消息，MAA 日志明确报
-#   Failed to PostMessageA [message=512][wParam=1][error=5]   ← 5 = ACCESS_DENIED
-# PrintWindow 截图失败(error 5) 也是同一个原因，不是"游戏反截图"。
-# 所以 2/4/32/64 在本机一律无效（点击进了空气，游戏纹丝不动）。
+# 权限前提：明日方舟 PC 客户端进程完整性级别高于普通进程，Windows 的 UIPI 会拦掉
+# 所有跨级别窗口消息（MAA 日志里是 Failed to PostMessageA ... error=5）。
+# 所以**必须让 MaiBot 以管理员身份运行**（启动一体化.bat 已加自动提权），
+# 否则 64 用不了、只能用 1（且 1 还要求游戏在前台）。
 #
-# **想让 2/4/32/64 生效，就把 MaiBot 以管理员身份运行**（届时推荐 64，不抢鼠标）。
-# 不提权的话只能用 1（Seize）。
-input_method = 1
+# 实测对照：
+#   未提权 + 1  → 无 error=5，但任务 18 秒就结束、游戏不进关卡
+#   已提权 + 1  → **error=5 完全消失**（UIPI 解决），但 Seize 仍因窗口非前台点不进去
+#   已提权 + 64 → 预期可用（不需前台），待主人实测
+input_method = 64
 # 没说关卡时用哪个（空 = 用游戏内当前/上次关卡）
 default_stage = ""
 # 单次挂机次数上限（防手滑写错，比如想打3次写成3000）
