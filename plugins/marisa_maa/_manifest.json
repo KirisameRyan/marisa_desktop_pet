@@ -1,0 +1,36 @@
+{
+  "manifest_version": 2,
+  "version": "0.1.0",
+  "name": "魔理沙 MAA 桥",
+  "description": "用 QQ 远程控制明日方舟（PC 客户端）挂机：/maa + 自然语言下发挂机指令，长挂机每 30 分钟汇报进度、清日常每个子任务完成即报，汇报直发不经模型。",
+  "author": {
+    "name": "Marisa Desktop Team",
+    "url": "https://github.com/"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/",
+    "homepage": "https://github.com/",
+    "documentation": "https://github.com/",
+    "issues": "https://github.com/"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.5.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "marisa-team.marisa-maa",
+  "plugin_type": "normal"
+}

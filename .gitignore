@@ -381,6 +381,7 @@ run_pet.bat
 !/plugins/marisa_voice
 !/plugins/marisa_dsh
 !/plugins/marisa_touhou
+!/plugins/marisa_maa
 # 插件来源与必需性登记表，必须随主仓库走
 !/plugins/MANIFEST.md
 
@@ -395,6 +396,7 @@ config.toml
 !/plugins/marisa_cv/config.toml
 !/plugins/marisa_dsh/config.toml
 !/plugins/marisa_touhou/config.toml
+!/plugins/marisa_maa/config.toml
 
 interested_rates.txt
 MaiBot.code-workspace

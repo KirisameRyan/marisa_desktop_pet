@@ -1,0 +1,27 @@
+[plugin]
+enabled = true
+config_version = "0.1.0"
+
+[maa]
+# MAA 安装目录（需含 MaaCore.dll 与 Python/asst 绑定）
+maa_dir = "D:\\MAA"
+# 游戏窗口标题（PC 客户端就是「明日方舟」）
+window_title = "明日方舟"
+# 截图方式：2=FramePool 是实测唯一完整干净且抗遮挡的；
+#   1=GDI 抓到的是压在游戏上的别的窗口 · 8=DXGI桌面 被遮挡处会串窗 · 16=PrintWindow 游戏拒绝(error 5)
+screencap_method = 2
+# 输入方式：2=SendMessage，不抢鼠标键盘，挂机时能正常用电脑
+input_method = 2
+# 没说关卡时用哪个（空 = 用游戏内当前/上次关卡）
+default_stage = ""
+# 单次挂机次数上限（防手滑写错，比如想打3次写成3000）
+max_times = 200
+connect_timeout_sec = 30.0
+
+[report]
+# 长挂机每隔多少分钟汇报一次进度
+long_task_minutes = 30
+# 清日常时每个子任务完成即报
+report_sub_tasks = true
+# 汇报里带掉落信息
+report_drops = true
