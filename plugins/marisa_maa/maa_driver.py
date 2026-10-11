@@ -188,16 +188,24 @@ class MaaDriver:
             raise RuntimeError("还没加载：先 load()")
         return int(self._asst.append_task(type_name, params or {}))
 
-    def start_blocking(self) -> None:
-        """阻塞执行队列里的全部任务（必须在独立线程里调用）。"""
+    def start(self) -> bool:
+        """启动任务队列。
+
+        **注意：AsstStart 不阻塞。** MaaCore 的实现是
+            if (running()) return false;
+            m_thread = std::thread(&Assistant::working_proc, this);
+            return true;                    // ← 立即返回
+        所以不能靠"这个调用返回了"判断任务跑完，必须轮询 `is_running`（AsstRunning）
+        或等 AllTasksCompleted 回调。
+
+        踩过：把它当成阻塞调用 → 线程秒退 → 外层以为干完了就退出进程 →
+        AsstStop 把刚起的任务掐死，表现为"入了队、返回 True、什么都没发生"。
+        """
 
         if self._asst is None:
             raise RuntimeError("还没加载：先 load()")
         self._running = True
-        try:
-            self._asst.start()
-        finally:
-            self._running = False
+        return bool(self._asst.start())
 
     def stop(self) -> bool:
         if self._asst is None:

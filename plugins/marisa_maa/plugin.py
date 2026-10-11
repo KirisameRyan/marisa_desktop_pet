@@ -395,7 +395,7 @@ class MarisaMaaPlugin(MaiBotPlugin):
 
         def _blocking() -> None:
             try:
-                driver.start_blocking()
+                driver.start()
             except Exception as exc:   # noqa: BLE001 - 线程里的异常要带回主循环
                 loop = self._loop
                 if loop is not None and not loop.is_closed():
