@@ -24,7 +24,10 @@
     "max_version": "2.99.99"
   },
   "dependencies": [],
-  "capabilities": [],
+  "capabilities": [
+    "send.text",
+    "send.hybrid"
+  ],
   "i18n": {
     "default_locale": "zh-CN",
     "supported_locales": [

@@ -35,6 +35,18 @@ from maa_driver import MaaDriver  # noqa: E402
 
 _PROJECT_ROOT = _PLUGIN_DIR.parents[1]
 
+# 命令正则前缀：容忍 〔主人〕 标记、@At 与「魔理沙」前缀。
+# 首版我直接把裸正则丢给 @Command，漏了锚点与触发词容错，也没有宿主约定的 raw 捕获组——
+# 与 marisa_gate / marisa_dsh 的写法保持一致才不会踩坑。
+_AT_MARK = r"(?:\s*〔[^〕]*〕\s*)?"
+_TRIGGER = r"(?:\s*(?:\[At:[^\]]*\]|@[\w\u4e00-\u9fa5]+)\s*)*(?:魔理沙[，,、\s]*)?"
+
+
+def cmd_pattern(inner: str) -> str:
+    """统一命令正则前缀（与 marisa_gate 的写法一致）。"""
+
+    return "^" + _AT_MARK + _TRIGGER + "(?P<raw>" + inner + ")$"
+
 # MaaCore 的 MsgId（见 MAA include/AsstMsg.h / asst/utils.py 的 Message 枚举）
 MSG_ALL_TASKS_COMPLETED = 3
 MSG_TASK_CHAIN_START = 10000
@@ -43,6 +55,10 @@ MSG_TASK_CHAIN_ERROR = 10003
 MSG_SUB_TASK_START = 20000
 MSG_SUB_TASK_COMPLETED = 20002
 MSG_SUB_TASK_EXTRA_INFO = 20003
+
+# 沉默多久就主动报一声。实测 StartUp 在游戏不在主界面时静默跑了 114 秒，
+# 期间插件一言不发，用户直接以为"没启动"——这个值就是为它设的。
+SILENCE_SEC = 75
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -147,6 +163,8 @@ class MarisaMaaPlugin(MaiBotPlugin):
         self._notify_stream: str = ""
         self._started_at: float = 0.0
         self._last_report: float = 0.0
+        self._last_event_at: float = 0.0    # 最近一次收到回调的时间（沉默检测用）
+        self._current_chain: str = ""       # 当前在跑哪条任务链
         self._chain_done: int = 0
         self._farming = False
 
@@ -251,6 +269,10 @@ class MarisaMaaPlugin(MaiBotPlugin):
                 continue
             msg = int(event.get("msg") or 0)
             data = event.get("data") or {}
+            self._last_event_at = time.time()
+            chain = str(data.get("taskchain") or data.get("task_chain") or "")
+            if chain:
+                self._current_chain = chain
 
             if msg == MSG_ALL_TASKS_COMPLETED:
                 self._farming = False
@@ -282,23 +304,45 @@ class MarisaMaaPlugin(MaiBotPlugin):
         return self._pending_times >= 20
 
     async def _heartbeat(self) -> None:
-        """长挂机的进度心跳：每 N 分钟报一次。"""
+        """进度心跳。
 
-        interval = max(60, int(self.config.report.long_task_minutes) * 60)
+        两种触发（都是实测逼出来的）：
+        · **沉默期**：任何任务只要超过 SILENCE_SEC 秒没有任何回调，就主动报一声。
+          实测 StartUp 在游戏不在主界面时静默跑了 **114 秒**，期间插件一言不发，
+          用户以为"没启动"——这是最伤体验的一种失败。
+        · **长挂机**：达到 long_task_minutes 间隔再报一次。
+        """
+
+        long_interval = max(60, int(self.config.report.long_task_minutes) * 60)
         while True:
-            await asyncio.sleep(30)
-            if not self._farming or not self._is_long_task():
+            await asyncio.sleep(15)
+            if not self._farming:
                 continue
             now = time.time()
-            if now - self._last_report < interval:
+            elapsed = int(now - self._started_at)
+            silent = now - self._last_event_at if self._last_event_at else elapsed
+
+            if silent >= SILENCE_SEC:
+                self._last_event_at = now
+                self._last_report = now
+                where = self._current_chain or "准备中"
+                await self._notify(
+                    f"⏳ 还在跑（{elapsed // 60} 分 {elapsed % 60} 秒）：当前 {where}。"
+                    "启动阶段有时要一两分钟，别急だぜ。"
+                )
+                continue
+
+            if not self._is_long_task():
+                continue
+            if now - self._last_report < long_interval:
                 continue
             self._last_report = now
             driver = self._driver
             alive = driver is not None and driver.connected()
-            elapsed = int(now - self._started_at)
             await self._notify(
                 f"⏳ 挂机进行中：已 {elapsed // 60} 分钟，"
-                f"目标 {self._pending_times} 轮，状态{'正常' if alive else '**连接异常**'}。"
+                f"目标 {self._pending_times} 轮，当前 {self._current_chain or '准备中'}，"
+                f"状态{'正常' if alive else '**连接异常**'}。"
             )
 
     async def _notify(self, text: str) -> None:
@@ -315,14 +359,28 @@ class MarisaMaaPlugin(MaiBotPlugin):
     # ─────────────────── 任务 ───────────────────
 
     async def _run_tasks(self, tasks: List[Tuple[str, Dict[str, Any]]], times: int) -> None:
-        """排队并执行任务（阻塞的 start 放线程里）。"""
+        """排队并执行任务（阻塞的 start 放线程里）。
+
+        **必须检查 append_task 的返回值**：MAA 的 AsstAppendTask 失败时返回 0，
+        首版忽略它，于是任务根本没进队列、却回了用户"已经开始"——等于说谎。
+        """
 
         driver = await self._get_driver()
+        queued: List[int] = []
         for type_name, params in tasks:
-            driver.append_task(type_name, params)
+            task_id = driver.append_task(type_name, params)
+            if not task_id:
+                raise RuntimeError(f"任务 {type_name} 入队失败（MAA 返回 0），参数：{params}")
+            queued.append(task_id)
+        self.ctx.logger.info(
+            "[marisa_maa] 已入队 %d 个任务（id=%s），times=%s",
+            len(queued), queued, times,
+        )
         self._pending_times = times
         self._started_at = time.time()
         self._last_report = self._started_at
+        self._last_event_at = self._started_at
+        self._current_chain = ""
         self._chain_done = 0
         self._farming = True
         if self._report_task is None:
@@ -382,14 +440,19 @@ class MarisaMaaPlugin(MaiBotPlugin):
     @Command(
         "marisa_maa",
         description="远程控制明日方舟挂机：/maa 挂1-7三轮（仅管理员）",
-        pattern=r"/maa(?:\s+[\s\S]*)?\s*$",
+        pattern=cmd_pattern(r"/maa(?:\s+[\s\S]*)?\s*$"),
         permission="operator",
     )
     async def cmd_maa(self, **kwargs: Any) -> tuple:
         if not isinstance(kwargs, dict):
             return False, "", False
         stream_id = str(kwargs.get("stream_id") or "")
-        raw = str(kwargs.get("raw") or kwargs.get("content") or "").strip()
+        # 命令原文由宿主放在 matched_groups["raw"]（见 cmd_pattern 的命名捕获组）
+        matched = kwargs.get("matched_groups")
+        raw = str((matched or {}).get("raw") or "") if isinstance(matched, dict) else ""
+        if not raw:
+            raw = str(kwargs.get("raw") or kwargs.get("content") or "")
+        raw = raw.strip()
         body = raw[len("/maa"):].strip() if raw.startswith("/maa") else raw
 
         self._notify_stream = stream_id
