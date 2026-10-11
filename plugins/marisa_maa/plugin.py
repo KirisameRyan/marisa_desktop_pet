@@ -191,16 +191,36 @@ class MarisaMaaPlugin(MaiBotPlugin):
         if self._report_task is not None:
             self._report_task.cancel()
             self._report_task = None
-        if self._driver is not None:
-            self._driver.close()
-            self._driver = None
+        self._release_driver()
 
     async def on_config_update(self, scope: str, config_data: Dict[str, Any], version: str) -> None:
         self.ctx.logger.info(
             "[marisa_maa] 配置已更新（scope=%s，version=%s）：%s",
             scope, version, "开启" if self.config.plugin.enabled else "关闭",
         )
-        self._driver = None   # 连接参数可能变了，下次重连
+        # 连接参数可能变了，下次重连。
+        # **必须走 _release_driver 销毁实例**：早先这里只写 `self._driver = None`
+        # 丢引用不销毁，MAA 的 Win32 控制器会继续活着并霸占游戏窗口
+        # （表现为"游戏一点开就自动最小化"）。
+        self._release_driver()
+
+    def _release_driver(self) -> None:
+        """销毁 MAA 实例，把游戏窗口交还给主人。
+
+        PostMsg-WindowPos 模式下 MAA 的 Win32 控制器会移动甚至最小化游戏窗口
+        （官方文档原话："窗口会乱飞，截图方式仅 PrintWindow，建议最小化"）。
+        所以任务结束、配置变更、插件卸载时都必须销毁实例 —— 只要实例活着，
+        控制器就活着，游戏窗口就会被它拿捏，主人手动打开也会被立刻最小化。
+        """
+
+        driver = self._driver
+        self._driver = None
+        if driver is None:
+            return
+        try:
+            driver.close()
+        except Exception:   # noqa: BLE001 - 必须让失败显式暴露在日志里，不能静默吞掉
+            self.ctx.logger.error("[marisa_maa] 销毁 MAA 实例失败，游戏窗口可能仍被占用", exc_info=True)
 
     # ─────────────────── 驱动器 ───────────────────
 
@@ -287,6 +307,10 @@ class MarisaMaaPlugin(MaiBotPlugin):
                     f"🎉 挂机全部完成だぜ！用时 {elapsed // 60} 分 {elapsed % 60} 秒，"
                     f"共 {self._chain_done} 个任务链。"
                 )
+                # 必须销毁 MAA 实例：PostMsg-WindowPos 模式下 Win32 控制器会移动乃至
+                # 最小化游戏窗口（官方描述就是"窗口会乱飞，建议最小化"）。实例活着
+                # 控制器就活着，会一直霸着窗口 —— 主人遇到的现象是"游戏一点开就自动最小化"。
+                self._release_driver()
                 continue
 
             if msg == MSG_TASK_CHAIN_COMPLETED:
@@ -476,6 +500,9 @@ class MarisaMaaPlugin(MaiBotPlugin):
             driver = self._driver
             stopped = driver.stop() if driver else False
             self._farming = False
+            # stop() 只是停任务队列，实例还在、Win32 控制器还霸着游戏窗口，
+            # 所以必须紧接着销毁实例，窗口才会还给主人。
+            self._release_driver()
             await self._notify("已经让它停下来了だぜ。" if stopped else "现在没有在跑的任务。")
             return True, "", True
 
@@ -579,6 +606,8 @@ class MarisaMaaPlugin(MaiBotPlugin):
         driver = self._driver
         ok = driver.stop() if driver else False
         self._farming = False
+        # 同对话指令里的"停"：必须销毁实例，否则 Win32 控制器会继续霸着游戏窗口
+        self._release_driver()
         return "已停止。" if ok else "当前没有在跑的任务。"
 
     @Tool("marisa_maa_screenshot", description="截一张明日方舟当前画面并发给用户。")
