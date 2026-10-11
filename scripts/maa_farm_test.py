@@ -173,11 +173,17 @@ def main() -> int:
             if event.get("type") != "maa_message":
                 continue
             msg = int(event.get("msg") or 0)
-            last_progress = time.time()
             data = event.get("data") or {}
-            chain_now = str(data.get("taskchain") or "")
-            if chain_now and chain_now != last_seen_task:
-                last_seen_task = chain_now
+            # ★ 只有**任务名发生变化**才算进展，不能用"收到事件"当进展 ——
+            # MAA 的 Wait* 类任务 next 里写着 ["下一步", "#self"]，认不到就无限重试
+            # 自己，此时**事件一直在产生但没有任何实际推进**。首版看门狗把每个事件
+            # 都当进展，于是永远不触发：卡死在 RelaunchAnchor@RA@RA4-WaitSkill2
+            # （等 OCR 认到「READY」，实测 10 分钟一动不动）时它还以为一切正常。
+            for key in ("task", "taskchain"):
+                now = str(data.get(key) or "")
+                if now and now != last_seen_task:
+                    last_seen_task = now
+                    last_progress = time.time()
             if msg == MSG_SUB_TASK_EXTRA_INFO:
                 what = data.get("what") or ""
                 if what == "StageDrops":

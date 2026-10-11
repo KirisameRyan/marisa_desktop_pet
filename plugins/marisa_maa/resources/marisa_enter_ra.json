@@ -79,16 +79,12 @@
     },
 
     "MarisaEnterRA@4": {
-        "doc": "门禁=OCR 认到「开始建设」（生息演算主题页右下）；点击=录制坐标 (1063,644)。点完就到 RA-4 地图，直接交给 RA4-Entry —— 它的 doc 正是『兼容已进入关卡后的起始界面』，会自己 OCR 认 RA-4 并点。",
+        "doc": "门禁=OCR 认到「开始建设」（生息演算主题页右下）；点击=录制坐标 (1063,644)。★ 到此结束，**不再往下接 RA4-Entry**。原因（实测踩过）：RA4-Entry→…→StartConstruction 是 MAA 的**内层链**，它缺了 Reclamation 任务那层『打完一波推下一步』的外层驱动，走到『开始建设』后 next 匹配不上就**卡死**（RelaunchAnchor@RA@ 记了 681 行、点击 122 次后彻底不动）；而且 Custom 不结束，排在它后面的 Reclamation 任务永远轮不到。所以本链只负责把游戏送进生息演算，挂机的活交给 Reclamation。",
         "algorithm": "OcrDetect",
         "text": ["开始建设"],
         "roi": [900, 600, 370, 85],
         "action": "ClickRect",
         "specificRect": [1053, 634, 20, 20],
-        "postDelay": 3500,
-        "next": [
-            "RelaunchAnchor@RA@RA4-Entry",
-            "#self"
-        ]
+        "postDelay": 4000
     }
 }
