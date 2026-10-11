@@ -10,8 +10,23 @@ window_title = "明日方舟"
 # 截图方式：2=FramePool 是实测唯一完整干净且抗遮挡的；
 #   1=GDI 抓到的是压在游戏上的别的窗口 · 8=DXGI桌面 被遮挡处会串窗 · 16=PrintWindow 游戏拒绝(error 5)
 screencap_method = 2
-# 输入方式：2=SendMessage，不抢鼠标键盘，挂机时能正常用电脑
-input_method = 2
+# 输入方式（这是个坑里爬出来的结论，别随便改）：
+#
+#   1 = Seize          真实输入（SendInput）。**不受 UIPI 限制**，代价是接管鼠标键盘。
+#   2 = SendMessage    靠窗口消息投递
+#   4 = PostMessage    同上
+#  32 = SendMessageWithCursorPos   先移光标再投递（看似优雅，但**同样被 UIPI 拦**）
+#  64 = PostMessageWithCursorPos   同上
+#
+# 实测：本机明日方舟 PC 客户端进程的完整性级别高于 MaiBot（非管理员），
+# Windows 的 UIPI 会拦下所有跨完整性级别的窗口消息，MAA 日志明确报
+#   Failed to PostMessageA [message=512][wParam=1][error=5]   ← 5 = ACCESS_DENIED
+# PrintWindow 截图失败(error 5) 也是同一个原因，不是"游戏反截图"。
+# 所以 2/4/32/64 在本机一律无效（点击进了空气，游戏纹丝不动）。
+#
+# **想让 2/4/32/64 生效，就把 MaiBot 以管理员身份运行**（届时推荐 64，不抢鼠标）。
+# 不提权的话只能用 1（Seize）。
+input_method = 1
 # 没说关卡时用哪个（空 = 用游戏内当前/上次关卡）
 default_stage = ""
 # 单次挂机次数上限（防手滑写错，比如想打3次写成3000）

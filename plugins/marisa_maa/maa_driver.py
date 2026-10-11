@@ -11,8 +11,11 @@
    被遮挡的部分会串进别的窗口；PrintWindow(16) 被游戏拒绝（error 5，附着直接失败）。
    FramePool（Windows.Graphics.Capture）完整干净，而且**不怕窗口被遮挡**。
 
-2. **输入方式用 SendMessage(2)**
-   不抢占鼠标键盘，挂机时可以正常用电脑。
+2. **输入方式必须用 Seize(1)**
+   实测：用 SendMessage(2) 时 MAA 日志显示点击任务全部"成功"（MatchTemplate + ClickSelf
+   + SubTaskCompleted），但游戏纹丝不动——因为方舟 PC 端是 Unity/DirectX，
+   **不读 WM_LBUTTONDOWN 这类窗口消息**，只认真实输入。
+   代价：Seize 会接管鼠标键盘，挂机期间电脑不能正常操作。
 
 3. **AsstGetImage 取的是"上次截图"**
    没截图过就返回哨兵值 (uint64)-1。必须先 AsstAsyncScreencap 再取。
@@ -58,7 +61,7 @@ class MaaDriver:
         maa_dir: Path,
         window_title: str,
         screencap_method: int = SCREENCAP_FRAME_POOL,
-        input_method: int = INPUT_SEND_MESSAGE,
+        input_method: int = INPUT_SEIZE,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         self.maa_dir = Path(maa_dir)

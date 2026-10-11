@@ -74,7 +74,13 @@ class MaaSectionConfig(PluginConfigBase):
         description="截图方式：2=FramePool（实测唯一完整干净的抗遮挡方式）·"
                     "1=GDI（实测抓到的是覆盖窗口）· 8=DXGI桌面（被遮挡处会串窗）· 16=PrintWindow（游戏拒绝）",
     )
-    input_method: int = Field(default=2, description="输入方式：2=SendMessage（不抢鼠标键盘）")
+    input_method: int = Field(
+        default=1,
+        description="输入方式：**1=Seize（真实输入，必需）** ·"
+                    "2=SendMessage（靠窗口消息投递，游戏不读 WM_ 消息 → 点击点进空气里，"
+                    "实测 MAA 日志显示点击成功但游戏纹丝不动）。"
+                    "代价：Seize 会接管鼠标键盘，挂机期间不能正常用电脑",
+    )
     default_stage: str = Field(default="", description="没说关卡时用哪个（空=用游戏内当前/上次关卡）")
     max_times: int = Field(default=200, description="单次挂机次数上限（防手滑写错）")
     connect_timeout_sec: float = Field(default=30.0, description="等待附着成功的超时")
