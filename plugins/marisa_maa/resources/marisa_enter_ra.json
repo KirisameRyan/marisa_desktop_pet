@@ -1,0 +1,94 @@
+{
+    "MarisaEnterRA": {
+        "doc": "从游戏主屏幕进入 RA-4。坐标来自 scripts/maa_click_recorder.py 的提权录制（MAA 1280x720 空间），识别区域按主人给的截图校准。设计：**识别做门禁（认出来才动手）+ 录制坐标做精确点击 + 认不出就 #self 重试 + 有返回按钮就退回重来**。走到 RA-4 地图后交给 RelaunchAnchor@RA@RA4-Entry 接管。",
+        "algorithm": "JustReturn",
+        "next": [
+            "MarisaEnterRA@0@AlreadyInMap",
+            "CloseAnno",
+            "CloseAnnoTexas",
+            "MarisaEnterRA@1"
+        ]
+    },
+
+    "MarisaEnterRA@0@AlreadyInMap": {
+        "doc": "入口先判断当前在哪儿：认到 RA 地图特征「建设元件」就说明已经在 RA-4 地图上了，直接交给 RA4-Entry（它的 doc 正是『兼容已进入关卡后的起始界面』），不必再从主屏导航一遍。主人发截图时游戏停在这一屏，链条就是因此空转的。",
+        "algorithm": "OcrDetect",
+        "text": ["建设元件"],
+        "roi": [140, 10, 250, 60],
+        "action": "DoNothing",
+        "next": [
+            "RelaunchAnchor@RA@RA4-Entry"
+        ]
+    },
+
+    "MarisaEnterRA@1": {
+        "doc": "步骤 1 路由：主屏幕（认到「终端」）就点它；否则有返回按钮就退回，然后重试本步。",
+        "algorithm": "JustReturn",
+        "next": [
+            "MarisaEnterRA@1@AtHome",
+            "MarisaEnterRA@1@GoBack"
+        ]
+    },
+    "MarisaEnterRA@1@AtHome": {
+        "doc": "门禁=OCR 认到「终端」（主屏右侧）；点击=录制坐标 (853,185)",
+        "algorithm": "OcrDetect",
+        "text": ["终端"],
+        "roi": [820, 90, 440, 190],
+        "action": "ClickRect",
+        "specificRect": [843, 175, 20, 20],
+        "postDelay": 2000,
+        "next": [
+            "MarisaEnterRA@2"
+        ]
+    },
+    "MarisaEnterRA@1@GoBack": {
+        "doc": "不在主屏幕：认到返回按钮就点它，回到本步路由重试。模板必须是真实存在的文件 —— 写错会让 MaaCore 整个资源加载失败（踩过：ReturnButton.png 是任务名不是模板名）",
+        "algorithm": "MatchTemplate",
+        "template": "Return.png",
+        "roi": [0, 0, 220, 130],
+        "action": "ClickSelf",
+        "postDelay": 1500,
+        "next": [
+            "MarisaEnterRA@1"
+        ]
+    },
+
+    "MarisaEnterRA@2": {
+        "doc": "点底部最右的「长期探索」标签（录制坐标 958,673）。★ 这里不能用 OCR 门禁：标签未选中时只显示图标、不显示「长期探索」文字（主人截图证实），认不到就会卡死。下一步 @3 再用「生息演算」文字做门禁 —— 那个文字在被选中的长期探索页上是一直显示的。",
+        "algorithm": "JustReturn",
+        "action": "ClickRect",
+        "specificRect": [948, 663, 20, 20],
+        "postDelay": 2500,
+        "next": [
+            "MarisaEnterRA@3"
+        ]
+    },
+
+    "MarisaEnterRA@3": {
+        "doc": "门禁=OCR 认到「生息演算」（长期探索页右侧卡片）；点击=录制坐标 (955,285)。ROI 放到整张卡片，容错大一些。",
+        "algorithm": "OcrDetect",
+        "text": ["生息演算"],
+        "roi": [780, 280, 440, 320],
+        "action": "ClickRect",
+        "specificRect": [945, 275, 20, 20],
+        "postDelay": 3000,
+        "next": [
+            "MarisaEnterRA@4",
+            "#self"
+        ]
+    },
+
+    "MarisaEnterRA@4": {
+        "doc": "门禁=OCR 认到「开始建设」（生息演算主题页右下）；点击=录制坐标 (1063,644)。点完就到 RA-4 地图，直接交给 RA4-Entry —— 它的 doc 正是『兼容已进入关卡后的起始界面』，会自己 OCR 认 RA-4 并点。",
+        "algorithm": "OcrDetect",
+        "text": ["开始建设"],
+        "roi": [900, 600, 370, 85],
+        "action": "ClickRect",
+        "specificRect": [1053, 634, 20, 20],
+        "postDelay": 3500,
+        "next": [
+            "RelaunchAnchor@RA@RA4-Entry",
+            "#self"
+        ]
+    }
+}
