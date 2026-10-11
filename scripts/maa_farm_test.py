@@ -43,6 +43,12 @@ def main() -> int:
     parser.add_argument("--input", type=int, default=64, help="输入方式：64=PostMessageWithCursorPos")
     parser.add_argument("--screencap", type=int, default=SCREENCAP_FRAME_POOL)
     parser.add_argument("--minutes", type=float, default=6.0, help="最多跑多少分钟")
+    parser.add_argument("--task", default="", help="任务类型，留空=StartUp+Fight；生息演算填 Reclamation")
+    parser.add_argument("--params", default="", help="任务参数 JSON，如 '{\"theme\":\"RelaunchAnchor\",\"mode\":\"RA4\"}'")
+    parser.add_argument("--repeat", type=int, default=1, help="把任务重复入队几次（刷几遍）")
+    parser.add_argument("--startup", action="store_true",
+                        help="先入队 StartUp 回到游戏主界面。生息演算等任务需要从主界面开始导航"
+                             "（MAA 的 Tales@RA@Navigation-FromMainInterface），否则会卡在导航阶段")
     parser.add_argument("--out", type=Path, default=Path("data/maa_farm_test"))
     args = parser.parse_args()
 
@@ -65,12 +71,33 @@ def main() -> int:
         (args.out / "00_before.png").write_bytes(shot)
         print(f"[2/4] 基线截图 {len(shot)} 字节", flush=True)
 
-    startup = driver.append_task("StartUp", {"client_type": "Official", "start_game_enabled": False})
-    fight = driver.append_task("Fight", {"stage": args.stage, "times": args.times})
-    print(f"[3/4] 入队 StartUp={startup} Fight={fight}（{args.stage} × {args.times}）", flush=True)
-    if not startup or not fight:
-        print("      ❌ 入队失败，MaaCore 拒绝了任务", flush=True)
-        return 2
+    if args.task:
+        # 指定了任务类型（如 Reclamation=生息演算）就直接跑它，不掺 StartUp——
+        # 除非显式 --startup：生息演算的导航阶段要求从「主界面」出发
+        # （MAA 日志里期望识别 Tales@RA@Navigation-FromMainInterface），
+        # 游戏若停在别的界面（比如 RA-4 关卡地图），导航会重试到上限后报错。
+        task_params = json.loads(args.params) if args.params else {}
+        queued = []
+        if args.startup:
+            queued.append(driver.append_task("StartUp",
+                                             {"client_type": "Official", "start_game_enabled": False}))
+        # --params 传数组时，每个元素各入队一个任务。
+        # 生息演算需要两步：先 Tales@RA@Navigation 从主界面导航进生息演算，
+        # 再 RelaunchAnchor@RA@RA4-Entry 进 RA-4（Custom 只会执行数组里第一个匹配上的任务）
+        for param_set in (task_params if isinstance(task_params, list) else [task_params] * max(1, args.repeat)):
+            queued.append(driver.append_task(args.task, param_set))
+        print(f"[3/4] 入队 {'StartUp + ' if args.startup else ''}{args.task} × {len(queued) - (1 if args.startup else 0)}"
+              f" → task_id={queued}，参数={task_params}", flush=True)
+        if not all(queued):
+            print("      ❌ 有任务入队失败（返回 0），MaaCore 拒绝了", flush=True)
+            return 2
+    else:
+        startup = driver.append_task("StartUp", {"client_type": "Official", "start_game_enabled": False})
+        fight = driver.append_task("Fight", {"stage": args.stage, "times": args.times})
+        print(f"[3/4] 入队 StartUp={startup} Fight={fight}（{args.stage} × {args.times}）", flush=True)
+        if not startup or not fight:
+            print("      ❌ 入队失败，MaaCore 拒绝了任务", flush=True)
+            return 2
 
     worker = threading.Thread(target=driver.start, daemon=True)
 

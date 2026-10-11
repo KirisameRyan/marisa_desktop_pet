@@ -49,6 +49,10 @@ INPUT_NONE = 0
 INPUT_SEIZE = 1
 INPUT_SEND_MESSAGE = 2
 INPUT_POST_MESSAGE = 4
+INPUT_SEND_MESSAGE_WITH_CURSOR_POS = 32
+INPUT_POST_MESSAGE_WITH_CURSOR_POS = 64
+INPUT_SEND_MESSAGE_WITH_WINDOW_POS = 128
+INPUT_POST_MESSAGE_WITH_WINDOW_POS = 256
 
 NULL_SIZE = (1 << 64) - 1   # AsstGetNullSize()，也是"取图失败"的哨兵
 
@@ -62,12 +66,16 @@ class MaaDriver:
         window_title: str,
         screencap_method: int = SCREENCAP_FRAME_POOL,
         input_method: int = INPUT_SEIZE,
+        keyboard_method: int = INPUT_SEND_MESSAGE,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         self.maa_dir = Path(maa_dir)
         self.window_title = window_title
         self.screencap_method = screencap_method
         self.input_method = input_method
+        # 键盘方式与鼠标分开：主人的 MAA GUI 就是 MouseMethod=PostMessageWithCursorPos
+        # + KeyboardMethod=SendMessage 这个组合，对齐它比自作主张更可靠。
+        self.keyboard_method = keyboard_method
         self.on_event = on_event
 
         self._asst: Any = None
@@ -111,7 +119,7 @@ class MaaDriver:
         # 附着窗口：这一条 asst.py 没包装，是我们自己补的
         ok = self._lib.AsstAttachWindow(
             self._ptr, ctypes.c_void_p(self._hwnd),
-            self.screencap_method, self.input_method, self.input_method,
+            self.screencap_method, self.input_method, self.keyboard_method,
         )
         if not ok:
             # 别急着甩锅给截图方式：AsstAttachWindow 返回 0 的原因有好几种，

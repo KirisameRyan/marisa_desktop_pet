@@ -70,16 +70,24 @@ class MaaSectionConfig(PluginConfigBase):
     maa_dir: str = Field(default="D:\\MAA", description="MAA 安装目录（含 MaaCore.dll 与 Python 绑定）")
     window_title: str = Field(default="明日方舟", description="游戏窗口标题")
     screencap_method: int = Field(
-        default=2,
-        description="截图方式：2=FramePool（实测唯一完整干净的抗遮挡方式）·"
-                    "1=GDI（实测抓到的是覆盖窗口）· 8=DXGI桌面（被遮挡处会串窗）· 16=PrintWindow（游戏拒绝）",
+        default=16,
+        description="截图方式：**16=PrintWindow（官方要求，提权后可用）** ·"
+                    "2=FramePool（会话会失效返回全黑图，需重新附着）·"
+                    "1=GDI（抓到的是覆盖窗口）· 8=DXGI桌面（被遮挡处会串窗）",
     )
     input_method: int = Field(
-        default=1,
-        description="输入方式：**1=Seize（真实输入，必需）** ·"
-                    "2=SendMessage（靠窗口消息投递，游戏不读 WM_ 消息 → 点击点进空气里，"
-                    "实测 MAA 日志显示点击成功但游戏纹丝不动）。"
-                    "代价：Seize 会接管鼠标键盘，挂机期间不能正常用电脑",
+        default=64,
+        description="鼠标输入方式：**64=PostMessageWithCursorPos（推荐）** ——"
+                    "把光标移到目标再投递消息，用完还原光标，**不会移动游戏窗口**。"
+                    "256=PostMessageWithWindowPos（官方文档推荐，但它靠移动窗口实现，"
+                    "表现为窗口乱飞/被最小化，主人实测挂机后游戏再也打不开）。"
+                    "1=Seize（真实输入，会抢走鼠标键盘，挂机时电脑没法用）。"
+                    "前提：必须提权（未提权时 UIPI 拦掉所有窗口消息，MAA 日志报 error=5），"
+                    "且系统 UI 缩放为 100%、游戏分辨率是标准 16:9",
+    )
+    keyboard_method: int = Field(
+        default=2,
+        description="键盘输入方式，默认 2=SendMessage（与主人的 MAA GUI 配置一致）",
     )
     default_stage: str = Field(default="", description="没说关卡时用哪个（空=用游戏内当前/上次关卡）")
     max_times: int = Field(default=200, description="单次挂机次数上限（防手滑写错）")
@@ -238,6 +246,7 @@ class MarisaMaaPlugin(MaiBotPlugin):
                 window_title=maa.window_title,
                 screencap_method=int(maa.screencap_method),
                 input_method=int(maa.input_method),
+                keyboard_method=int(maa.keyboard_method),
                 on_event=self._on_driver_event_threadsafe,
             )
             await asyncio.to_thread(driver.load)
