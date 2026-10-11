@@ -33,6 +33,11 @@ MSG_TASK_CHAIN_ERROR = 10003
 MSG_SUB_TASK_ERROR = 20003 - 1   # 20002 之后的错误号，仅用于打印
 MSG_SUB_TASK_EXTRA_INFO = 20003
 
+# 急停标志：跑的时候在仓库根目录建这个文件，脚本下一轮就会收工并释放实例。
+# 起因是测试进程被提权拉起后，非提权的 shell 停不掉它（CommandLine 读不到、
+# 模块枚举不了、taskkill 报 Access denied），只能等 --minutes 到点。
+STOP_FLAG = Path(__file__).resolve().parent.parent / "data" / "maa_stop.flag"
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="MAA 直连挂机测试")
@@ -43,6 +48,12 @@ def main() -> int:
     parser.add_argument("--input", type=int, default=64, help="输入方式：64=PostMessageWithCursorPos")
     parser.add_argument("--screencap", type=int, default=SCREENCAP_FRAME_POOL)
     parser.add_argument("--minutes", type=float, default=6.0, help="最多跑多少分钟")
+    parser.add_argument("--stall-sec", type=float, default=180.0,
+                        help="看门狗阈值：多少秒没有任何任务事件就判定卡住并重启任务链。"
+                             "MAA 的任务链是线性的，游戏偏离预期（战斗结束/弹窗/识别失败）时"
+                             "next 里没有一项匹配，它会停在 Wait* 上死等 —— 这是主人观察到的"
+                             "『跑到一半卡住不知道自己该干嘛』。官方链靠 next 末尾挂"
+                             "ClickCornerUntilReturnButton/ReturnButtons/CloseAnnos/StartUp 兜底")
     parser.add_argument("--task", default="", help="任务类型，留空=StartUp+Fight；生息演算填 Reclamation")
     parser.add_argument("--params", default="", help="任务参数 JSON，如 '{\"theme\":\"RelaunchAnchor\",\"mode\":\"RA4\"}'")
     parser.add_argument("--queue", default="",
@@ -79,10 +90,13 @@ def main() -> int:
 
     queue_spec = args.queue or (Path(args.queue_file).read_text(encoding="utf-8")
                                 if args.queue_file else "")
+    # 看门狗重启任务链时要按原样重新下发，所以留一份副本
+    pending_tasks: list[dict] = []
     if queue_spec:
         # 一次下发多种任务：用来测「首页 → 各功能页」的导航。
         # 每个任务自己会从首页导航过去、做完再回来，所以能同时验证多个入口。
         spec = json.loads(queue_spec)
+        pending_tasks = spec
         queued = []
         for item in spec:
             type_name = str(item["type"])
@@ -108,6 +122,7 @@ def main() -> int:
         # 再 RelaunchAnchor@RA@RA4-Entry 进 RA-4（Custom 只会执行数组里第一个匹配上的任务）
         for param_set in (task_params if isinstance(task_params, list) else [task_params] * max(1, args.repeat)):
             queued.append(driver.append_task(args.task, param_set))
+        pending_tasks = [{"type": args.task, "params": ps} for ps in (task_params if isinstance(task_params, list) else [task_params])]
         print(f"[3/4] 入队 {'StartUp + ' if args.startup else ''}{args.task} × {len(queued) - (1 if args.startup else 0)}"
               f" → task_id={queued}，参数={task_params}", flush=True)
         if not all(queued):
@@ -139,6 +154,17 @@ def main() -> int:
     fight_done = False
     deadline = time.time() + args.minutes * 60
     step = 0
+    # 看门狗：MAA 的任务链是**线性**的，每步只认它期望的画面。游戏一旦偏离预期
+    # （战斗结束、弹窗、识别失败），next 列表里没有一项匹配，MAA 就停在当前任务上
+    # **死等**——主人看到的就是"跑到一半卡住不动，不知道自己该干嘛"（实测卡在
+    # RelaunchAnchor@RA@RA4-WaitSkill2 上整整 10 分钟）。
+    # 官方链靠 next 末尾挂 ClickCornerUntilReturnButton / ReturnButtons / CloseAnnos /
+    # StartUp 这些通用恢复出口兜底；我的 Custom 链没挂，所以在外面再加一层看门狗：
+    # 超过 STALL_SEC 没有新的任务事件就判定卡住 → AsstStop → 重新下发 → 重新开始。
+    stall_sec = args.stall_sec
+    last_progress = time.time()
+    last_seen_task = ""
+    restarts = 0
     while time.time() < deadline:
         time.sleep(5)
         # 消费新增的回调
@@ -147,7 +173,11 @@ def main() -> int:
             if event.get("type") != "maa_message":
                 continue
             msg = int(event.get("msg") or 0)
+            last_progress = time.time()
             data = event.get("data") or {}
+            chain_now = str(data.get("taskchain") or "")
+            if chain_now and chain_now != last_seen_task:
+                last_seen_task = chain_now
             if msg == MSG_SUB_TASK_EXTRA_INFO:
                 what = data.get("what") or ""
                 if what == "StageDrops":
@@ -178,15 +208,38 @@ def main() -> int:
             if shot:
                 (args.out / f"{step:02d}_t{step * 5}s.png").write_bytes(shot)
 
-        # 结束条件看 **AsstRunning**，不看线程存活——start() 是立即返回的（见上面的注释）
-        if fight_done or not driver.is_running:
-            if not driver.is_running:
-                time.sleep(3)          # 给最后几条回调一点时间落地
-                break
+        # 急停开关：测试进程是提权起的，我自己（非提权的 shell）停不掉它
+        # —— 提权进程的 CommandLine 读不到、模块枚举不了、taskkill 也是 Access denied。
+        # 所以留一个标志文件，脚本每轮检查，发现就主动收工并释放实例。
+        if STOP_FLAG.exists():
+            print(f"      检测到 {STOP_FLAG}，主动停止并释放 MAA 实例", flush=True)
+            driver.stop()
+            STOP_FLAG.unlink(missing_ok=True)
+            break
+
+        # 看门狗：卡住就重启任务链（见循环开头的说明）
+        stalled_for = time.time() - last_progress
+        if stalled_for > stall_sec and driver.is_running:
+            restarts += 1
+            print(f"      ⏰ 已 {int(stalled_for)} 秒没有任何任务事件 → 判定卡住，"
+                  f"重启任务链（第 {restarts} 次）", flush=True)
+            driver.stop()
+            time.sleep(3)
+            for item in pending_tasks:      # 重新下发（内容与首次入队时一致）
+                driver.append_task(item["type"], item.get("params") or {})
+            driver.start()
+            last_progress = time.time()
+
+        # 只在**全部任务**跑完时结束。
+        # 不能用 fight_done 提前退出：队列里可能还有后续任务 ——
+        # 踩过：Fight 完成后脚本立刻退出，进程一没 AsstStop 就把后面的 RA-4 掐死了，
+        # 表现为"日志里 0 个 RA 任务，脚本却已 EXITCODE=0"。
+        if not driver.is_running:
+            time.sleep(3)          # 给最后几条回调一点时间落地
             break
 
     print(f"\n[4/4] 结果：仍在运行={driver.is_running} · Fight完成={fight_done} · "
-          f"**掉落={drops_seen}**", flush=True)
+          f"**掉落={drops_seen}** · 看门狗重启 {restarts} 次", flush=True)
     print(f"      截图与现场见 {args.out}", flush=True)
     driver.close()
     return 0 if drops_seen else 1
