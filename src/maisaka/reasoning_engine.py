@@ -890,10 +890,18 @@ class MaisakaReasoningEngine:
             self._runtime._clear_focus_cooldown_wakeup_scheduled()
         silent_reply_frequency = self._runtime._is_reply_frequency_silent()
 
+        # wait 期间默认忽略新消息（挂机观察等场景不想被普通群聊打断），
+        # 但 **@机器人 / 提及机器人 / 私聊** 的消息必须能打断 wait：
+        # 用户明确在催问时不能让 wait 把响应吞掉（实测踩过：用户连发三次催促，
+        # 全被 wait 的 240/420 秒盲等吞了，只能等超时才有反应）。
+        pending_at, pending_mention = self._runtime._get_pending_attention_flags()
+        attention_interrupt = pending_at or pending_mention or not self._runtime.chat_stream.is_group_session
+
         if (
             self._runtime._agent_state == self._runtime._STATE_WAIT
             and not (timeout_triggered or proactive_triggered)
             and not silent_reply_frequency
+            and not attention_interrupt
         ):
             self._runtime._mark_message_turn_unscheduled()
             logger.debug(f"{self._runtime.log_prefix} 当前仍处于 wait 状态，忽略消息触发并继续等待超时")

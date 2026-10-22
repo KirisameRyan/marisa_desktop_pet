@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "version": "0.1.0",
+  "version": "0.4.1",
   "name": "魔理沙 MAA 桥",
-  "description": "用 QQ 远程控制明日方舟（PC 客户端）挂机：/maa + 自然语言下发挂机指令，长挂机每 30 分钟汇报进度、清日常每个子任务完成即报，汇报直发不经模型。",
+  "description": "用 QQ 远程控制明日方舟（PC 客户端）挂机：/maa 自然语言下发刷关/清日常/生息演算（RA 自动进场），长挂机定期汇报、清日常逐事件汇报，任务出错如实上报，汇报直发不经模型。",
   "author": {
     "name": "Marisa Desktop Team",
     "url": "https://github.com/"

@@ -225,7 +225,7 @@ def shell_proposal(cmd: str, workdir: str, default_workdir: str) -> str:
     return propose("shell", cmd, _resolve_cwd(workdir, default_workdir))
 
 
-def shutdown_action(seconds: int, cancel: bool, default_workdir: str) -> str:
+def shutdown_action(seconds: int, cancel: bool, default_workdir: str, require_confirm: bool = True) -> str:
     if cancel:
         res = _run_pwsh("shutdown /a", default_workdir, 15)
         _audit("shutdown", "cancel", "shutdown /a", default_workdir, res["rc"], res["out"][:300])
@@ -236,6 +236,15 @@ def shutdown_action(seconds: int, cancel: bool, default_workdir: str) -> str:
             return "本来就没有进行中的关机计划だぜ（不用取消）。"
         return f"取消失败：{res['out'][:200]}"
     sec = max(0, int(seconds or 30))
+    if not require_confirm:
+        # 直接执行（默认模式）：主人说"关机"就启动倒计时——不再走提案-确认，
+        # 因为倒计时本身就是缓冲（期间说「取消关机」可中止，shutdown /a 兜底）。
+        cmd = f"shutdown /s /t {sec}"
+        res = _run_pwsh(cmd, default_workdir, 15)
+        _audit("shutdown", "exec", cmd, default_workdir, res["rc"], res["out"][:200])
+        if res["rc"] == 0:
+            return f"已启动 {sec} 秒关机倒计时だぜ（要反悔就说「取消关机」）。"
+        return f"关机失败：{res['out'][:200]}"
     return propose("shutdown", f"shutdown /s /t {sec}", default_workdir, {"seconds": sec})
 
 

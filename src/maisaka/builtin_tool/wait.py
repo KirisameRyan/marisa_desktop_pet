@@ -12,13 +12,13 @@ def get_tool_spec() -> ToolSpec:
 
     return ToolSpec(
         name="wait",
-        description="暂停当前对话并固定等待一段时间。",
+        description="暂停当前对话并固定等待一段时间（上限 120 秒；用户 @机器人或催问时可提前恢复）。",
         parameters_schema={
             "type": "object",
             "properties": {
                 "seconds": {
                     "type": "integer",
-                    "description": "等待秒数。",
+                    "description": "等待秒数（0-120，超出的会按 120 截断）。",
                 },
             },
             "required": ["seconds"],
@@ -41,7 +41,9 @@ async def handle_tool(
         wait_seconds = int(seconds)
     except (TypeError, ValueError):
         wait_seconds = 30
-    wait_seconds = max(0, wait_seconds)
+    # 上限 120 秒：wait 是"稍后再看"的机制，不是长时间盲等——实测模型会传 240/420 秒，
+    # 盲等期间（普通消息不打断）等于让机器人失去响应能力，用户催问也没用。
+    wait_seconds = max(0, min(wait_seconds, 120))
     entered, current_count, max_count = tool_ctx.runtime._try_enter_wait_state(
         seconds=wait_seconds,
         tool_call_id=invocation.call_id,

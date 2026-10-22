@@ -1,214 +1,220 @@
 {
-    "MarisaGoHome":  {
-                         "doc":  "★ 通用：确保游戏回到主界面。发命令时不管游戏停在哪儿都先走它一次。原理：认到「终端」就算到首页；否则只要有返回按钮就点返回、回到本链重试；再不行交给 MAA 自带的通用脱困 ClickCornerUntilReturnButton（点角落直到出现返回按钮）。到首页后本链结束，队列里的下一个任务接着跑。",
-                         "algorithm":  "JustReturn",
-                         "next":  [
-                                      "MarisaGoHome@AtHome",
-                                      "CloseAnno",
-                                      "CloseAnnoTexas",
-                                      "MarisaGoHome@Back",
-                                      "ClickCornerUntilReturnButton"
-                                  ]
-                     },
-    "MarisaGoHome@AtHome":  {
-                                "doc":  "已在主界面（认到「终端」文字）→ 什么都不做。**刻意不写 next**：链结束 = 这个 Custom 任务完成，队列里的下一个任务才开始。",
-                                "algorithm":  "OcrDetect",
-                                "text":  [
-                                             "终端"
-                                         ],
-                                "roi":  [
-                                            820,
-                                            90,
-                                            440,
-                                            190
-                                        ],
-                                "action":  "DoNothing"
-                            },
-    "MarisaGoHome@Back":  {
-                              "doc":  "不在主界面：认到返回按钮就点它，然后回到本链开头重试（一直退到首页为止）。模板必须是真实存在的文件 —— 写错名字会让 MaaCore 整个资源加载失败（踩过：ReturnButton.png 是任务名不是模板名）",
-                              "algorithm":  "MatchTemplate",
-                              "template":  "Return.png",
-                              "roi":  [
-                                          0,
-                                          0,
-                                          220,
-                                          130
-                                      ],
-                              "action":  "ClickSelf",
-                              "postDelay":  1200,
-                              "next":  [
-                                           "MarisaGoHome"
-                                       ]
-                          },
-    "MarisaEnterRA":  {
-                          "doc":  "从游戏主界面进入生息演算：先确保在首页（自己的 @0 路由，与 MarisaGoHome 同判据），再依次点 终端 → 长期探索 → 生息演算 → 开始建设。坐标由 scripts/maa_click_recorder.py 提权录制，识别区域按主人截图校准。到生息演算即结束，挂机交给官方 Reclamation 任务（它才有完整的外层生命周期，见 commit 4f9597b）。",
-                          "algorithm":  "JustReturn",
-                          "next":  [
-                                       "MarisaEnterRA@0@AtHome",
-                                       "CloseAnno",
-                                       "CloseAnnoTexas",
-                                       "MarisaEnterRA@0@Back",
-                                       "ClickCornerUntilReturnButton"
-                                   ]
-                      },
-    "MarisaEnterRA@0@AtHome":  {
-                                   "doc":  "已在主界面：点右侧「终端」（录制坐标 853,185）",
-                                   "algorithm":  "OcrDetect",
-                                   "text":  [
-                                                "终端"
-                                            ],
-                                   "roi":  [
-                                               820,
-                                               90,
-                                               440,
-                                               190
-                                           ],
-                                   "action":  "ClickRect",
-                                   "specificRect":  [
-                                                        843,
-                                                        175,
-                                                        20,
-                                                        20
-                                                    ],
-                                   "postDelay":  2000,
-                                   "next":  [
-                                                "MarisaEnterRA@2"
-                                            ]
-                               },
-    "MarisaEnterRA@0@Back":  {
-                                 "doc":  "不在主界面：点返回，回到本链开头重试",
-                                 "algorithm":  "MatchTemplate",
-                                 "template":  "Return.png",
-                                 "roi":  [
-                                             0,
-                                             0,
-                                             220,
-                                             130
-                                         ],
-                                 "action":  "ClickSelf",
-                                 "postDelay":  1200,
-                                 "next":  [
-                                              "MarisaEnterRA"
-                                          ]
-                             },
-    "MarisaEnterRA@2":  {
-                            "doc":  "点底部最右的「长期探索」标签（录制坐标 958,673）。★ 这里不能用 OCR 门禁：标签未选中时只显示图标、不显示「长期探索」文字（主人截图证实），认不到就会卡死。下一步 @3 用「生息演算」文字做门禁。",
-                            "algorithm":  "JustReturn",
-                            "action":  "ClickRect",
-                            "specificRect":  [
-                                                 948,
-                                                 663,
-                                                 20,
-                                                 20
-                                             ],
-                            "postDelay":  2500,
-                            "next":  [
-                                         "MarisaEnterRA@3"
-                                     ]
-                        },
-    "MarisaEnterRA@3":  {
-                            "doc":  "门禁=OCR 认到「生息演算」（长期探索页右侧卡片）；点击=录制坐标 (955,285)",
-                            "algorithm":  "OcrDetect",
-                            "text":  [
-                                         "生息演算"
-                                     ],
-                            "roi":  [
-                                        780,
-                                        280,
-                                        440,
-                                        320
-                                    ],
-                            "action":  "ClickRect",
-                            "specificRect":  [
-                                                 945,
-                                                 275,
-                                                 20,
-                                                 20
-                                             ],
-                            "postDelay":  3000,
-                            "next":  [
-                                         "MarisaEnterRA@4",
-                                         "#self"
-                                     ]
-                        },
-    "MarisaEnterRA@4":  {
-                            "doc":  "到达生息演算主题页后点右下「开始建设」。★ 门禁做**双保险**：「开始建设」按钮带强光晕、OCR 容易读不出（实测时好时坏），所以同时接受左下角的「罗德岛采购平台」——那是同一页上的纯文字、深色底，好认得多。任一认到就点，点完进入 RA-4 地图，由 @5 接着点 RA-4 节点。",
-                            "algorithm":  "JustReturn",
-                            "next":  [
-                                         "MarisaEnterRA@4@ByPurchase",
-                                         "MarisaEnterRA@4@ByStartButton",
-                                         "#self"
-                                     ]
-                        },
-    "MarisaEnterRA@4@ByPurchase":  {
-                                       "doc":  "门禁=OCR 认到「罗德岛采购平台」（主题页左下纯文字，好识别）",
-                                       "algorithm":  "OcrDetect",
-                                       "text":  [
-                                                    "罗德岛采购平台"
-                                                ],
-                                       "roi":  [
-                                                   60,
-                                                   600,
-                                                   360,
-                                                   80
-                                               ],
-                                       "action":  "ClickRect",
-                                       "specificRect":  [
-                                                            1053,
-                                                            634,
-                                                            20,
-                                                            20
-                                                        ],
-                                       "postDelay":  4000,
-                                       "next":  [
-                                                    "MarisaEnterRA@5",
-                                                    "#self"
-                                                ]
-                                   },
-    "MarisaEnterRA@4@ByStartButton":  {
-                                          "doc":  "门禁=OCR 认到「开始建设」（主题页右下按钮）",
-                                          "algorithm":  "OcrDetect",
-                                          "text":  [
-                                                       "开始建设"
-                                                   ],
-                                          "roi":  [
-                                                      880,
-                                                      590,
-                                                      400,
-                                                      100
-                                                  ],
-                                          "action":  "ClickRect",
-                                          "specificRect":  [
-                                                               1053,
-                                                               634,
-                                                               20,
-                                                               20
-                                                           ],
-                                          "postDelay":  4000,
-                                          "next":  [
-                                                       "MarisaEnterRA@5",
-                                                       "#self"
-                                                   ]
-                                      },
-    "MarisaEnterRA@5":  {
-                            "doc":  "★ 主人录制的第 5 个点 (667,374) —— RA-4 地图上的 RA-4 节点。门禁=OCR 认到左上角「建设元件」（RA 地图独有、纯文字好认）。点完就到达 RA-4 的等待/准备页，随后交给排队的 Reclamation 任务开打。这一步曾被误删（以为「开始建设」会直接进关），结果到了地图就停在原地——主人截图指出后补回。",
-                            "algorithm":  "OcrDetect",
-                            "text":  [
-                                         "建设元件"
-                                     ],
-                            "roi":  [
-                                        20,
-                                        5,
-                                        430,
-                                        75
-                                    ],
-                            "action":  "ClickRect",
-                            "specificRect":  [
-                                                 657,
-                                                 364,
-                                                 20,
-                                                 20
-                                             ],
-                            "postDelay":  3500
-                        }
+    "MarisaGoHome": {
+        "doc": "★ 通用：确保游戏回到主界面。发命令时不管游戏停在哪儿都先走它一次。原理：认到「终端」就算到首页；否则只要有返回按钮就点返回、回到本链重试；再不行交给 MAA 自带的通用脱困 ClickCornerUntilReturnButton（点角落直到出现返回按钮）。到首页后本链结束，队列里的下一个任务接着跑。",
+        "algorithm": "JustReturn",
+        "next": [
+            "MarisaGoHome@AtHome",
+            "CloseAnno",
+            "CloseAnnoTexas",
+            "MarisaGoHome@Back"
+        ]
+    },
+    "MarisaGoHome@AtHome": {
+        "doc": "已在主界面（认到「终端」文字）→ 什么都不做。**刻意不写 next**：链结束 = 这个 Custom 任务完成，队列里的下一个任务才开始。",
+        "algorithm": "OcrDetect",
+        "text": [
+            "终端"
+        ],
+        "roi": [
+            820,
+            90,
+            440,
+            190
+        ],
+        "action": "DoNothing"
+    },
+    "MarisaGoHome@Back": {
+        "doc": "不在主界面：点左上角的返回按钮。★ 必须用 MAA 的 RA 专用模板（Tales@RA@BackDark/Light.png）—— 通用 Return.png 在生息演算界面上匹配不上（主人指出：退出键就在左上角，是我用错了模板）。模板字段名是 template（单数，可传字符串列表做多模板），任一命中即可；**写成复数 templates 会导致 MAA 找不到模板图、整包资源加载失败（Asst.load 返回 False，实测踩过）**。同理 algorithm 必须写 MatchTemplate，写成 TemplateMatch 会整条任务失效。",
+        "algorithm": "MatchTemplate",
+        "roi": [
+            0,
+            0,
+            200,
+            130
+        ],
+        "action": "ClickSelf",
+        "postDelay": 1500,
+        "next": [
+            "MarisaGoHome"
+        ],
+        "template": [
+            "Tales@RA@BackDark.png",
+            "Tales@RA@BackLight.png",
+            "Return.png"
+        ]
+    },
+    "MarisaEnterRA": {
+        "doc": "从游戏主界面进入生息演算：先确保在首页（自己的 @0 路由，与 MarisaGoHome 同判据），再依次点 终端 → 长期探索 → 生息演算 → 开始建设。坐标由 scripts/maa_click_recorder.py 提权录制，识别区域按主人截图校准。到生息演算即结束，挂机交给官方 Reclamation 任务（它才有完整的外层生命周期，见 commit 4f9597b）。",
+        "algorithm": "JustReturn",
+        "next": [
+            "MarisaEnterRA@0@AtHome",
+            "CloseAnno",
+            "CloseAnnoTexas",
+            "MarisaEnterRA@0@Back"
+        ]
+    },
+    "MarisaEnterRA@0@AtHome": {
+        "doc": "已在主界面：点右侧「终端」（录制坐标 853,185）",
+        "algorithm": "OcrDetect",
+        "text": [
+            "终端"
+        ],
+        "roi": [
+            820,
+            90,
+            440,
+            190
+        ],
+        "action": "ClickRect",
+        "specificRect": [
+            843,
+            175,
+            20,
+            20
+        ],
+        "postDelay": 2000,
+        "next": [
+            "MarisaEnterRA@2"
+        ]
+    },
+    "MarisaEnterRA@0@Back": {
+        "doc": "不在主界面：点左上角的返回按钮。★ 必须用 MAA 的 RA 专用模板（Tales@RA@BackDark/Light.png）—— 通用 Return.png 在生息演算界面上匹配不上（主人指出：退出键就在左上角，是我用错了模板）。模板字段名是 template（单数，可传字符串列表做多模板），任一命中即可；**写成复数 templates 会导致 MAA 找不到模板图、整包资源加载失败（Asst.load 返回 False，实测踩过）**。同理 algorithm 必须写 MatchTemplate，写成 TemplateMatch 会整条任务失效。",
+        "algorithm": "MatchTemplate",
+        "roi": [
+            0,
+            0,
+            200,
+            130
+        ],
+        "action": "ClickSelf",
+        "postDelay": 1500,
+        "next": [
+            "MarisaEnterRA"
+        ],
+        "template": [
+            "Tales@RA@BackDark.png",
+            "Tales@RA@BackLight.png",
+            "Return.png"
+        ]
+    },
+    "MarisaEnterRA@2": {
+        "doc": "点底部最右的「长期探索」标签（录制坐标 958,673）。★ 这里不能用 OCR 门禁：标签未选中时只显示图标、不显示「长期探索」文字（主人截图证实），认不到就会卡死。下一步 @3 用「生息演算」文字做门禁。",
+        "algorithm": "JustReturn",
+        "action": "ClickRect",
+        "specificRect": [
+            948,
+            663,
+            20,
+            20
+        ],
+        "postDelay": 2500,
+        "next": [
+            "MarisaEnterRA@3"
+        ]
+    },
+    "MarisaEnterRA@3": {
+        "doc": "门禁=OCR 认到「生息演算」（长期探索页右侧卡片）；点击=录制坐标 (955,285)",
+        "algorithm": "OcrDetect",
+        "text": [
+            "生息演算"
+        ],
+        "roi": [
+            780,
+            280,
+            440,
+            320
+        ],
+        "action": "ClickRect",
+        "specificRect": [
+            945,
+            275,
+            20,
+            20
+        ],
+        "postDelay": 3000,
+        "next": [
+            "MarisaEnterRA@4",
+            "#self"
+        ]
+    },
+    "MarisaEnterRA@4": {
+        "doc": "到达生息演算主题页后点右下「开始建设」。★ 门禁做**双保险**：「开始建设」按钮带强光晕、OCR 容易读不出（实测时好时坏），所以同时接受左下角的「罗德岛采购平台」——那是同一页上的纯文字、深色底，好认得多。任一认到就点，点完进入 RA-4 地图，由 @5 接着点 RA-4 节点。",
+        "algorithm": "JustReturn",
+        "next": [
+            "MarisaEnterRA@4@ByPurchase",
+            "MarisaEnterRA@4@ByStartButton",
+            "#self"
+        ]
+    },
+    "MarisaEnterRA@4@ByPurchase": {
+        "doc": "门禁=OCR 认到「罗德岛采购平台」（主题页左下纯文字，好识别）",
+        "algorithm": "OcrDetect",
+        "text": [
+            "罗德岛采购平台"
+        ],
+        "roi": [
+            60,
+            600,
+            360,
+            80
+        ],
+        "action": "ClickRect",
+        "specificRect": [
+            1053,
+            634,
+            20,
+            20
+        ],
+        "postDelay": 4000,
+        "next": [
+            "MarisaEnterRA@5",
+            "#self"
+        ]
+    },
+    "MarisaEnterRA@4@ByStartButton": {
+        "doc": "门禁=OCR 认到「开始建设」（主题页右下按钮）",
+        "algorithm": "OcrDetect",
+        "text": [
+            "开始建设"
+        ],
+        "roi": [
+            880,
+            590,
+            400,
+            100
+        ],
+        "action": "ClickRect",
+        "specificRect": [
+            1053,
+            634,
+            20,
+            20
+        ],
+        "postDelay": 4000,
+        "next": [
+            "MarisaEnterRA@5",
+            "#self"
+        ]
+    },
+    "MarisaEnterRA@5": {
+        "doc": "★ 主人录制的第 5 个点 (667,374) —— RA-4 地图上的 RA-4 节点。门禁=OCR 认到左上角「建设元件」（RA 地图独有、纯文字好认）。点完就到达 RA-4 的等待/准备页，随后交给排队的 Reclamation 任务开打。这一步曾被误删（以为「开始建设」会直接进关），结果到了地图就停在原地——主人截图指出后补回。",
+        "algorithm": "OcrDetect",
+        "text": [
+            "建设元件"
+        ],
+        "roi": [
+            20,
+            5,
+            430,
+            75
+        ],
+        "action": "ClickRect",
+        "specificRect": [
+            657,
+            364,
+            20,
+            20
+        ],
+        "postDelay": 3500
+    }
 }

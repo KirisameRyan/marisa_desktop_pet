@@ -1,4 +1,8 @@
+from errno import EACCES, EDEADLK
+from typing import Optional
+
 import io
+import msvcrt
 import os
 import re
 import subprocess
@@ -7,8 +11,6 @@ import threading
 import time
 import unicodedata
 import wave
-from typing import Optional
-
 import httpx
 import pygame
 
@@ -20,26 +22,36 @@ _START_LOCK_PATH = DATA_DIR / "voice_api.start.lock"
 
 
 def _open_voice_log():
-    """打开语音服务输出日志（追加）；打不开时退回丢弃输出。"""
+    """打开语音服务输出日志（追加）；文件错误直接暴露，避免丢失失败原因。"""
 
-    try:
-        _VOICE_API_LOG.parent.mkdir(parents=True, exist_ok=True)
-        return open(_VOICE_API_LOG, "ab")
-    except OSError:
-        return subprocess.DEVNULL
+    _VOICE_API_LOG.parent.mkdir(parents=True, exist_ok=True)
+    return open(_VOICE_API_LOG, "ab")
 
 
 def _try_acquire_start_lock(ttl_sec: float) -> bool:
     """跨进程启动锁：宿主侧已在拉起语音服务时返回 False，避免重复加载抢显存。"""
 
-    try:
-        _START_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if _START_LOCK_PATH.exists() and time.time() - _START_LOCK_PATH.stat().st_mtime < ttl_sec:
-            return False
-        _START_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
-        return True
-    except OSError:
-        return True
+    _START_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # 系统文件锁保护时间戳的检查与更新，过期锁竞争也不能重复拉起服务。
+    with _START_LOCK_PATH.open("a+b") as lock_file:
+        lock_file.seek(0)
+        try:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in (EACCES, EDEADLK):
+                return False
+            raise
+        try:
+            if lock_file.read() and time.time() - os.fstat(lock_file.fileno()).st_mtime < ttl_sec:
+                return False
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(os.getpid()).encode("ascii"))
+            lock_file.flush()
+            return True
+        finally:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
 
 # 初始化 pygame 音频混音器
 try:
@@ -168,17 +180,18 @@ class TTSEngine:
             return True
 
         try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            subprocess.Popen(
-                # cmd /d /s /c 双引号写法：路径含 (1) 这类括号时，普通 cmd /c 会截断命令秒退
-                f'cmd /d /s /c ""{script}""',
-                cwd=os.path.dirname(script),
-                creationflags=flags,
-                close_fds=True,
-                stdout=_open_voice_log(),
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-            )
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            with _open_voice_log() as log_file:
+                subprocess.Popen(
+                    # cmd /d /s /c 双引号写法：路径含 (1) 这类括号时，普通 cmd /c 会截断命令秒退
+                    f'cmd /d /s /c ""{script}""',
+                    cwd=os.path.dirname(script),
+                    creationflags=flags,
+                    close_fds=True,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                )
             print(f"[TTS] 正在拉起语音服务: {script}（输出见 {_VOICE_API_LOG}）")
             return True
         except Exception as e:

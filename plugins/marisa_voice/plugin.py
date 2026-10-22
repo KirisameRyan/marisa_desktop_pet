@@ -14,9 +14,17 @@
 
 from __future__ import annotations
 
+from errno import EACCES, EDEADLK
+from pathlib import Path
+from typing import Any, Dict, Literal, Optional
+
+from maibot_sdk import Command, Field, HomeCard, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
+
 import asyncio
 import base64
 import io
+import msvcrt
 import os
 import re
 import subprocess
@@ -24,13 +32,7 @@ import time
 import unicodedata
 import uuid
 import wave
-from pathlib import Path
-from typing import Any, Dict, Literal, Optional
-
 import httpx
-
-from maibot_sdk import Command, Field, HomeCard, MaiBotPlugin, PluginConfigBase, Tool
-from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _PLUGIN_DIR.parent.parent
@@ -40,26 +42,36 @@ _START_LOCK_PATH = _PROJECT_ROOT / "data" / "voice_api.start.lock"
 
 
 def _open_voice_log() -> Any:
-    """打开语音服务输出日志（追加）；打不开时退回丢弃输出。"""
+    """打开语音服务输出日志（追加）；文件错误直接暴露，避免丢失失败原因。"""
 
-    try:
-        _VOICE_API_LOG.parent.mkdir(parents=True, exist_ok=True)
-        return open(_VOICE_API_LOG, "ab")
-    except OSError:
-        return subprocess.DEVNULL
+    _VOICE_API_LOG.parent.mkdir(parents=True, exist_ok=True)
+    return open(_VOICE_API_LOG, "ab")
 
 
 def _try_acquire_start_lock(ttl_sec: float) -> bool:
     """跨进程启动锁：短时间内已有进程在拉起语音服务时返回 False，避免重复加载抢显存。"""
 
-    try:
-        _START_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if _START_LOCK_PATH.exists() and time.time() - _START_LOCK_PATH.stat().st_mtime < ttl_sec:
-            return False
-        _START_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
-        return True
-    except OSError:
-        return True
+    _START_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # 系统文件锁保护时间戳的检查与更新，过期锁竞争也不能重复拉起服务。
+    with _START_LOCK_PATH.open("a+b") as lock_file:
+        lock_file.seek(0)
+        try:
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in (EACCES, EDEADLK):
+                return False
+            raise
+        try:
+            if lock_file.read() and time.time() - os.fstat(lock_file.fileno()).st_mtime < ttl_sec:
+                return False
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(os.getpid()).encode("ascii"))
+            lock_file.flush()
+            return True
+        finally:
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
 
 # 日文假名区段（平假名 / 片假名 / 假名扩展 / 半角片假名）。
 # 当前音色模型是纯中文模型，没有日文前端，假名会被当中文音素错误朗读，送合成前一律剔除。
@@ -72,7 +84,7 @@ _DEGENERATE_MIN_SEC = 6.0
 _DEGENERATE_SEC_PER_CHAR = 0.75
 
 # 同时进行的合成数上限，多群同时触发时不至于把 GPU 打满
-_SYNTH_CONCURRENCY = 2
+_SYNTH_CONCURRENCY = 1
 
 _AT_MARK = r"(?:\s*〔[^〕]*〕\s*)?(?:\s*(?:\[At:[^\]]*\]|@[\w\u4e00-\u9fa5]+)\s*)*"
 _TRIGGER = r"(?:魔理沙[，,、\s]*)?"
@@ -147,7 +159,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=False, description="是否启用插件")
-    config_version: str = Field(default="1.2.0", description="配置版本")
+    config_version: str = Field(default="1.2.1", description="配置版本")
 
 
 class VoiceConfig(PluginConfigBase):
@@ -243,7 +255,7 @@ class ServiceConfig(PluginConfigBase):
         description="等待服务就绪的最长时间（秒）",
     )
     prewarm: bool = Field(
-        default=True,
+        default=False,
         description="宿主启动时预热语音服务：首句不用等模型加载，启动失败会写日志并给桌宠提示",
     )
 
@@ -415,8 +427,7 @@ class MarisaVoicePlugin(MaiBotPlugin):
         if not stream_id:
             return {"success": False, "content": "没有拿到会话上下文，无法发送语音，请直接用文字回复。"}
 
-        async with self._synth_sem:
-            voice_path = await self._synthesize(spoken, float(self.config.service.synthesize_timeout_sec))
+        voice_path = await self._synthesize(spoken, float(self.config.service.synthesize_timeout_sec))
         if not voice_path:
             return {
                 "success": False,
@@ -514,6 +525,11 @@ class MarisaVoicePlugin(MaiBotPlugin):
     # ───────── 语音合成 ─────────
 
     async def _synthesize(self, text: str, timeout_sec: float) -> Optional[str]:
+        """工具和公开指令共用合成队列，避免同时推理挤占内存与显存。"""
+        async with self._synth_sem:
+            return await self._synthesize_serial(text, timeout_sec)
+
+    async def _synthesize_serial(self, text: str, timeout_sec: float) -> Optional[str]:
         """调用本地 GPT-SoVITS 合成语音，落盘后返回绝对路径（失败返回 None）。"""
         svc = self.config.service
         ref_audio = str(svc.ref_audio_path or "").strip().replace("\\", "/")
@@ -636,15 +652,16 @@ class MarisaVoicePlugin(MaiBotPlugin):
         """
 
         try:
-            subprocess.Popen(
-                f'cmd /d /s /c ""{script}""',
-                cwd=str(Path(script).parent),
-                creationflags=0x08000000,
-                close_fds=True,
-                stdout=_open_voice_log(),
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-            )
+            with _open_voice_log() as log_file:
+                subprocess.Popen(
+                    f'cmd /d /s /c ""{script}""',
+                    cwd=str(Path(script).parent),
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    close_fds=True,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                )
             self.ctx.logger.info("[marisa_voice] 正在拉起语音服务: %s", script)
         except Exception as exc:
             self.ctx.logger.warning("[marisa_voice] 拉起语音服务失败: %s", exc)

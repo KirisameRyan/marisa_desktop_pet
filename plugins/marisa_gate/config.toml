@@ -15,6 +15,9 @@ deepseek_api_key = ""
 [terminal]
 enabled = true
 confirm_required = true
+# 关机是否要「提案→回复执行 P1」两步确认：默认 false=说了就关（先起倒计时，
+# 期间说「取消关机」可中止）。true 则回到两步确认流程
+shutdown_confirm = false
 workdir_default = "D:\\MarisaBOT"
 timeout_shell_sec = 60.0
 output_cap_chars = 1500

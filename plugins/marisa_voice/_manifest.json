@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "marisa.voice",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "name": "魔理沙语音",
   "description": "让魔理沙在 QQ 里按概率用本地 GPT-SoVITS 音色发语音：有时打字、有时发语音条。",
   "author": {

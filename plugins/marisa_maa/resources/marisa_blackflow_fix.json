@@ -1,0 +1,20 @@
+{
+    "BlackFlow@Roguelike@Squad-EnterPoint": {
+        "doc": "★ 黑流树海（限时活动）适配 —— 插件对官方定义的覆盖。官方标准链在原版黑流里进入分队页后要等 SquadConfirm（LastRewardConfirm.png 模板），但树海活动的分队页没有该按钮：实测卡满 20 次重试后整条链报错（2026-10-12 11:43 实机日志）。覆盖后：进门判定「分队」标题不变；进页后优先交给官方限时链 BlackFlowTemporary 的 ChooseSpecialSquad（OCR「特勤分队」点选，链内继续走 确认→策略→机械师→进入树海）；若认不到「特勤分队」（理论上非树海界面）则回落官方 SquadConfirm，保持原版行为。",
+        "algorithm": "OcrDetect",
+        "text": [
+            "分队"
+        ],
+        "roi": [
+            620,
+            20,
+            100,
+            34
+        ],
+        "action": "DoNothing",
+        "next": [
+            "BlackFlowTemporary@ChooseSpecialSquad",
+            "BlackFlow@Roguelike@SquadConfirm"
+        ]
+    }
+}

@@ -59,6 +59,10 @@ def main() -> int:
     parser.add_argument("--queue", default="",
                         help="一次下发多种任务：[{\"type\":\"Depot\",\"params\":{}}, ...]。"
                              "用于测试「首页 → 各功能页」的导航链路")
+    parser.add_argument("--no-shot", action="store_true",
+                        help="关闭周期性截图。★ 用于验证：driver.screenshot() 内部会调 "
+                             "AsstAsyncScreencap，而 MAA 自己在跑任务时也在取帧 —— "
+                             "外部插进去的截图可能打乱它的识别节奏（GUI 从不这么干）。")
     parser.add_argument("--queue-file", default="",
                         help="从文件读任务队列 JSON。**推荐用这个** —— 经 .bat 传 JSON 会被"
                              "cmd 的引号规则搞坏（踩过），落成文件再传路径最稳")
@@ -209,7 +213,7 @@ def main() -> int:
                 print("      🎉 全部完成", flush=True)
 
         step += 1
-        if step % 4 == 0:      # 每 20 秒存一张图
+        if not args.no_shot and step % 4 == 0:      # 每 20 秒存一张图
             shot = driver.screenshot()
             if shot:
                 (args.out / f"{step:02d}_t{step * 5}s.png").write_bytes(shot)

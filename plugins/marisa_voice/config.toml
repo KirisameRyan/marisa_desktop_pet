@@ -1,6 +1,6 @@
 [plugin]
 enabled = true
-config_version = "1.2.0"
+config_version = "1.2.1"
 
 # 语音由魔理沙自己决定：它调用 marisa_say 工具说话，这一轮就不再发文字。
 # use_hint / length_hint 会在插件加载时拼进工具描述，改完需要热重载插件才生效。
@@ -27,4 +27,4 @@ synthesize_timeout_sec = 45.0
 auto_start_api = true
 api_start_script = "D:\\GPT-SoVITS-v4-20250421fix(1)\\GPT-SoVITS-v4-20250422fix\\run_api.bat"
 api_start_timeout_sec = 180.0
-prewarm = true # 宿主启动时预热语音服务（失败写 data/voice_api.log 并提示桌宠）
+prewarm = false # 首次使用时加载语音模型，避免开机就占用数 GB 内存

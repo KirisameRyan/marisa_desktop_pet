@@ -237,6 +237,11 @@ class GateTerminalConfig(PluginConfigBase):
 
     enabled: bool = Field(default=True, description="总开关：启用远程终端能力")
     confirm_required: bool = Field(default=True, description="非只读命令必须先回复『执行』确认")
+    shutdown_confirm: bool = Field(
+        default=False,
+        description="关机是否要提案-确认：**默认 false=说了就关**（会先启动倒计时，"
+                    "期间说「取消关机」可中止）。true 则回到「先回复执行 P1」的老流程",
+    )
     workdir_default: str = Field(default=r"D:\MarisaBOT", description="默认工作目录")
     timeout_shell_sec: float = Field(default=60.0, description="普通命令超时（秒）")
     output_cap_chars: int = Field(default=1500, description="回传输出上限字符数")
@@ -503,7 +508,11 @@ class MarisaGatePlugin(MaiBotPlugin):
         if cmd in ("关闭电脑", "关机", "shutdown"):
             m = re.search(r"(\d{1,4})", args or "")
             sec = int(m.group(1)) if m else 30
-            return SE.shutdown_action(sec, cancel=False, default_workdir=str(tc.workdir_default))
+            return SE.shutdown_action(
+                sec, cancel=False,
+                default_workdir=str(tc.workdir_default),
+                require_confirm=bool(tc.shutdown_confirm),
+            )
         if cmd in ("取消关机", "取消"):
             return SE.shutdown_action(0, cancel=True, default_workdir=str(tc.workdir_default))
         return None
@@ -994,7 +1003,7 @@ class MarisaGatePlugin(MaiBotPlugin):
 
     @Tool(
         "marisa_shutdown",
-        description="关机专用工具（带倒计时可取消）。仅当主人明确说出『关机/重启』字样时才能调用；寒暄（如晚安/明天见/去休息吧）不要调用，避免误触发。会先提议，等主人回复『执行 P编号』后生效；主人回复『取消』可中止。",
+        description="关机专用工具（带倒计时可取消）。仅当主人明确说出『关机/重启』字样时才能调用；寒暄（如晚安/明天见/去休息吧）不要调用，避免误触发。默认直接启动倒计时（主人回复『取消关机』可中止）；若配置开回了确认模式，则会先提议、等主人回复『执行 P编号』后生效。",
         parameters=[
             ToolParameterInfo(name="seconds", param_type=ToolParamType.INTEGER, description="倒计时秒数，默认 30", required=False),
             ToolParameterInfo(name="cancel", param_type=ToolParamType.BOOLEAN, description="true=取消已排定的关机", required=False),
@@ -1007,7 +1016,11 @@ class MarisaGatePlugin(MaiBotPlugin):
         tc = self._term_cfg()
         if not tc.enabled:
             return "远程终端总开关没开だぜ。"
-        return SE.shutdown_action(max(0, int(seconds or 30)), bool(cancel), str(tc.workdir_default))
+        return SE.shutdown_action(
+            max(0, int(seconds or 30)), bool(cancel),
+            str(tc.workdir_default),
+            require_confirm=bool(tc.shutdown_confirm),
+        )
 
     # ───────────────── 待确认：意图归模型，执行归这里 ─────────────────
 
